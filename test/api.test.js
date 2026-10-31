@@ -1,6 +1,8 @@
 process.env.NODE_ENV = 'test';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
+import { generateKeyPair, exportJWK, SignJWT } from 'jose';
 import 'dotenv/config';
 import { app } from '../dist/index.js';
 import { connectToDatabase, closeDatabaseConnection } from '../dist/config/db.js';
@@ -9,14 +11,49 @@ import { initializeBorrowsCollection } from '../dist/models/borrowModel.js';
 
 let server;
 let baseUrl;
+let jwksServer;
+let authToken;
 
 test.before(async () => {
+  // Ephemeral JWKS server
+  const keyPair = await generateKeyPair('RS256');
+  const publicJwk = await exportJWK(keyPair.publicKey);
+  publicJwk.kid = 'api-test-key-1';
+  publicJwk.alg = 'RS256';
+  publicJwk.use = 'sig';
+
+  await new Promise((resolve) => {
+    jwksServer = http.createServer((req, res) => {
+      if (req.url === '/jwks.json') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ keys: [publicJwk] }));
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+
+    jwksServer.listen(0, () => {
+      const port = jwksServer.address().port;
+      process.env.AUTH_JWKS_URL = `http://localhost:${port}/jwks.json`;
+      resolve();
+    });
+  });
+
+  authToken = await new SignJWT({
+    email: 'tester@booknook.library',
+    name: 'Test Librarian',
+  })
+    .setProtectedHeader({ alg: 'RS256', kid: 'api-test-key-1' })
+    .setIssuedAt()
+    .setExpirationTime('2h')
+    .sign(keyPair.privateKey);
+
   await connectToDatabase();
   await initializeBooksCollection();
   await initializeBorrowsCollection();
 
   await new Promise((resolve) => {
-    // Listen on an ephemeral port for testing
     server = app.listen(0, () => {
       const port = server.address().port;
       baseUrl = `http://localhost:${port}`;
@@ -28,6 +65,9 @@ test.before(async () => {
 test.after(async () => {
   if (server) {
     await new Promise((resolve) => server.close(resolve));
+  }
+  if (jwksServer) {
+    await new Promise((resolve) => jwksServer.close(resolve));
   }
   await closeDatabaseConnection();
 });
@@ -60,10 +100,13 @@ test('GET /api/books returns book catalog with typed fields (category, image, ad
 });
 
 test('POST /api/books validates and adds a book with typed Book schema', async () => {
-  // Test invalid payload
+  // Test invalid payload with token
   const badRes = await fetch(`${baseUrl}/api/books`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${authToken}`,
+    },
     body: JSON.stringify({ title: '' }),
   });
   assert.equal(badRes.status, 400);
@@ -76,15 +119,14 @@ test('POST /api/books validates and adds a book with typed Book schema', async (
     image: 'https://images.unsplash.com/photo-1532012164546-f432f2e35b34?auto=format&fit=crop&w=600&q=80',
     description: 'Straight from the programming trenches, this guide examines modern development practices, career growth, and software craftsmanship.',
     totalCopies: 2,
-    addedBy: {
-      name: 'Elena Rostova',
-      email: 'elena@booknook.library',
-    },
   };
 
   const addRes = await fetch(`${baseUrl}/api/books`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${authToken}`,
+    },
     body: JSON.stringify(validBook),
   });
 
@@ -95,12 +137,12 @@ test('POST /api/books validates and adds a book with typed Book schema', async (
   assert.equal(json.data.category, 'Others');
   assert.equal(json.data.image, validBook.image);
   assert.equal(json.data.availableCopies, 2);
-  assert.equal(json.data.addedBy.email, 'elena@booknook.library');
+  assert.equal(json.data.addedBy.email, 'tester@booknook.library');
 });
 
 test('Workflow: Borrow and return a book with UNIQUE compound index enforcement', async () => {
   // 1. Get an available book
-  const booksRes = await fetch(`${baseUrl}/api/books?availableOnly=true`);
+  const booksRes = await fetch(`${baseUrl}/api/books`);
   const booksData = await booksRes.json();
   const targetBook = booksData.data[0];
   assert.ok(targetBook, 'Should have at least one available book');
@@ -114,7 +156,10 @@ test('Workflow: Borrow and return a book with UNIQUE compound index enforcement'
 
   const borrowRes = await fetch(`${baseUrl}/api/books/${targetBook._id}/borrow`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${authToken}`,
+    },
     body: JSON.stringify(borrowPayload),
   });
 
@@ -133,7 +178,10 @@ test('Workflow: Borrow and return a book with UNIQUE compound index enforcement'
   // 3. Try to borrow the same book again with the same userEmail (compound UNIQUE index prevents double borrowing)
   const duplicateBorrowRes = await fetch(`${baseUrl}/api/books/${targetBook._id}/borrow`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${authToken}`,
+    },
     body: JSON.stringify(borrowPayload),
   });
   assert.equal(duplicateBorrowRes.status, 409);
@@ -143,7 +191,10 @@ test('Workflow: Borrow and return a book with UNIQUE compound index enforcement'
   // 4. Return the book via /api/books/:id/return
   const returnRes = await fetch(`${baseUrl}/api/books/${targetBook._id}/return`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${authToken}`,
+    },
     body: JSON.stringify({ borrowId: borrowRecordId }),
   });
 

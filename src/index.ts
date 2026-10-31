@@ -4,7 +4,7 @@ import cors from 'cors';
 import { connectToDatabase, closeDatabaseConnection } from './config/db';
 import { initializeBooksCollection } from './models/bookModel';
 import { initializeBorrowsCollection } from './models/borrowModel';
-import bookRoutes from './routes/bookRoutes';
+import booksRouter from './routes/books';
 import borrowRoutes from './routes/borrowRoutes';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 
@@ -59,7 +59,9 @@ app.get('/', (req: Request, res: Response) => {
 });
 
 // Application Routes
-app.use('/api/books', bookRoutes);
+app.use('/books', booksRouter);
+app.use('/api/books', booksRouter);
+app.use('/borrows', borrowRoutes);
 app.use('/api/borrows', borrowRoutes);
 
 // Error handling
