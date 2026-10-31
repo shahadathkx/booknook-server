@@ -1,10 +1,11 @@
+process.env.NODE_ENV = 'test';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import 'dotenv/config';
-import { createApp } from '../src/app.js';
-import { connectToDatabase, closeDatabaseConnection } from '../src/config/db.js';
-import { initializeBooksCollection } from '../src/models/bookModel.js';
-import { initializeBorrowsCollection } from '../src/models/borrowModel.js';
+import { app } from '../dist/index.js';
+import { connectToDatabase, closeDatabaseConnection } from '../dist/config/db.js';
+import { initializeBooksCollection } from '../dist/models/bookModel.js';
+import { initializeBorrowsCollection } from '../dist/models/borrowModel.js';
 
 let server;
 let baseUrl;
@@ -14,7 +15,6 @@ test.before(async () => {
   await initializeBooksCollection();
   await initializeBorrowsCollection();
 
-  const app = createApp();
   await new Promise((resolve) => {
     // Listen on an ephemeral port for testing
     server = app.listen(0, () => {
@@ -32,12 +32,12 @@ test.after(async () => {
   await closeDatabaseConnection();
 });
 
-test('GET / returns operational health status', async () => {
+test('GET / returns health route JSON message', async () => {
   const res = await fetch(`${baseUrl}/`);
   assert.equal(res.status, 200);
   const data = await res.json();
-  assert.equal(data.status, 'operational');
-  assert.equal(data.name, 'BookNook API Server');
+  assert.equal(data.status, 'healthy');
+  assert.match(data.message, /Express \+ TypeScript API server/i);
 });
 
 test('GET /api/books returns book catalog without lorem ipsum', async () => {
@@ -156,4 +156,3 @@ test('GET /api/borrows returns borrowing records list', async () => {
   assert.equal(json.success, true);
   assert.ok(Array.isArray(json.data));
 });
-

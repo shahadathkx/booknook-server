@@ -5,23 +5,17 @@ import {
   addBook,
   borrowBook,
   returnBook,
-} from '../controllers/bookController.js';
+} from '../controllers/bookController';
 
 const router = Router();
 
-// Retrieve all books with optional search / filter
+// Catalog routes
 router.get('/', getBooks);
-
-// Add a new book to the library catalog
 router.post('/', addBook);
-
-// Retrieve single book details
 router.get('/:id', getBookById);
 
-// Borrow a book
+// Checkout & Return actions
 router.post('/:id/borrow', borrowBook);
-
-// Return a book
 router.post('/:id/return', returnBook);
 
 export default router;

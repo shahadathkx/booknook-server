@@ -1,8 +1,9 @@
+import { Book } from '../types';
+
 /**
- * Curated initial library books with authentic titles, authors, and synopsis.
- * Strictly adheres to the rule: No lorem ipsum anywhere.
+ * Authentic, curated initial library books without lorem ipsum.
  */
-export const initialBooks = [
+export const initialBooks: Omit<Book, '_id' | 'createdAt' | 'updatedAt'>[] = [
   {
     title: "To Kill a Mockingbird",
     author: "Harper Lee",

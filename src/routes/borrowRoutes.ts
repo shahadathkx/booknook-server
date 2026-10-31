@@ -2,14 +2,14 @@ import { Router } from 'express';
 import {
   getBorrowRecords,
   returnBorrowRecord,
-} from '../controllers/borrowController.js';
+} from '../controllers/borrowController';
 
 const router = Router();
 
-// Retrieve borrow records (supports ?status=active or ?email=...)
+// Borrow transaction history & active loans
 router.get('/', getBorrowRecords);
 
-// Return book directly by borrow record ID
+// Return loan by record ID
 router.post('/:id/return', returnBorrowRecord);
 
 export default router;
