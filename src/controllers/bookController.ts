@@ -8,11 +8,13 @@ import {
 } from '../models/bookModel';
 import {
   insertBorrowRecord,
-  findActiveBorrow,
+  findBorrowByBookAndUser,
   findBorrowById,
   markRecordAsReturned,
 } from '../models/borrowModel';
-import { ApiResponse } from '../types';
+import { ApiResponse, BookCategory } from '../types';
+
+const VALID_CATEGORIES: BookCategory[] = ['Fiction', 'Science', 'History', 'Kids', 'Others'];
 
 function extractParam(param: string | string[] | undefined): string {
   if (Array.isArray(param)) return param[0] || '';
@@ -21,11 +23,11 @@ function extractParam(param: string | string[] | undefined): string {
 
 export async function getBooks(req: Request, res: Response<ApiResponse>, next: NextFunction): Promise<void> {
   try {
-    const { search, status, genre } = req.query;
+    const { search, category, availableOnly } = req.query;
     const books = await findAllBooks({
       search: typeof search === 'string' ? search : undefined,
-      status: typeof status === 'string' ? status : undefined,
-      genre: typeof genre === 'string' ? genre : undefined,
+      category: typeof category === 'string' ? category : undefined,
+      availableOnly: availableOnly === 'true',
     });
 
     res.status(200).json({
@@ -64,7 +66,7 @@ export async function getBookById(req: Request, res: Response<ApiResponse>, next
 
 export async function addBook(req: Request, res: Response<ApiResponse>, next: NextFunction): Promise<void> {
   try {
-    const { title, author, genre, description, totalCopies, coverImage } = req.body;
+    const { title, author, category, image, coverImage, description, totalCopies, addedBy } = req.body;
 
     if (!title || typeof title !== 'string' || !title.trim()) {
       res.status(400).json({
@@ -81,6 +83,10 @@ export async function addBook(req: Request, res: Response<ApiResponse>, next: Ne
       });
       return;
     }
+
+    const validatedCategory = (category && VALID_CATEGORIES.includes(category as BookCategory))
+      ? (category as BookCategory)
+      : 'Fiction';
 
     if (!description || typeof description !== 'string' || !description.trim()) {
       res.status(400).json({
@@ -99,18 +105,26 @@ export async function addBook(req: Request, res: Response<ApiResponse>, next: Ne
       return;
     }
 
+    const bookImage = (image && typeof image === 'string')
+      ? image
+      : (coverImage && typeof coverImage === 'string' ? coverImage : undefined);
+
     const newBook = await insertBook({
       title,
       author,
-      genre: typeof genre === 'string' ? genre : 'General',
+      category: validatedCategory,
       description,
       totalCopies: copies,
-      coverImage: typeof coverImage === 'string' ? coverImage : undefined,
+      image: bookImage,
+      addedBy: {
+        name: (addedBy?.name && typeof addedBy.name === 'string') ? addedBy.name : 'BookNook Curator',
+        email: (addedBy?.email && typeof addedBy.email === 'string') ? addedBy.email : 'curator@booknook.library',
+      },
     });
 
     res.status(201).json({
       success: true,
-      message: `"${newBook.title}" has been successfully added to the BookNook library.`,
+      message: `"${newBook.title}" has been successfully added to the BookNook catalog.`,
       data: newBook,
     });
   } catch (error) {
@@ -121,21 +135,24 @@ export async function addBook(req: Request, res: Response<ApiResponse>, next: Ne
 export async function borrowBook(req: Request, res: Response<ApiResponse>, next: NextFunction): Promise<void> {
   try {
     const bookId = extractParam(req.params.id);
-    const { borrowerName, borrowerEmail, dueDate } = req.body;
+    const { userEmail, borrowerEmail, userName, borrowerName, returnDate } = req.body;
 
-    if (!borrowerName || typeof borrowerName !== 'string' || !borrowerName.trim()) {
+    const email = (userEmail || borrowerEmail) as string;
+    const name = (userName || borrowerName) as string;
+
+    if (!name || typeof name !== 'string' || !name.trim()) {
       res.status(400).json({
         success: false,
-        message: 'Borrower name is required.',
+        message: 'Borrower user name is required.',
       });
       return;
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!borrowerEmail || typeof borrowerEmail !== 'string' || !emailRegex.test(borrowerEmail.trim())) {
+    if (!email || typeof email !== 'string' || !emailRegex.test(email.trim())) {
       res.status(400).json({
         success: false,
-        message: 'A valid borrower email address is required.',
+        message: 'A valid borrower user email address is required.',
       });
       return;
     }
@@ -157,15 +174,17 @@ export async function borrowBook(req: Request, res: Response<ApiResponse>, next:
       return;
     }
 
-    const existingBorrow = await findActiveBorrow(bookId, borrowerEmail);
-    if (existingBorrow) {
+    // Proactive check before insert
+    const existingBorrow = await findBorrowByBookAndUser(bookId, email);
+    if (existingBorrow && (!existingBorrow.returnDate || existingBorrow.returnDate === null)) {
       res.status(409).json({
         success: false,
-        message: `You currently have an active borrowed copy of "${book.title}". Please return it before borrowing again.`,
+        message: `You have already borrowed "${book.title}". Please return your current copy before borrowing again.`,
       });
       return;
     }
 
+    // Decrement available copies
     const updatedBook = await decrementCopies(bookId);
     if (!updatedBook) {
       res.status(409).json({
@@ -175,26 +194,37 @@ export async function borrowBook(req: Request, res: Response<ApiResponse>, next:
       return;
     }
 
-    const borrowRecord = await insertBorrowRecord({
-      bookId,
-      bookTitle: book.title,
-      borrowerName,
-      borrowerEmail,
-      dueDate,
-    });
+    let borrowRecord;
+    try {
+      borrowRecord = await insertBorrowRecord({
+        bookId,
+        bookTitle: book.title,
+        bookImage: book.image,
+        userEmail: email,
+        userName: name,
+        returnDate: returnDate ? new Date(returnDate) : null,
+      });
+    } catch (insertError: any) {
+      // Revert decrement if unique index constraint triggers
+      await incrementCopies(bookId);
 
-    const formattedDue = new Date(borrowRecord.dueDate).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
+      // Handle MongoDB E11000 duplicate key error on compound unique index { bookId: 1, userEmail: 1 }
+      if (insertError.code === 11000) {
+        res.status(409).json({
+          success: false,
+          message: `You have already borrowed "${book.title}". Double borrowing is prevented.`,
+        });
+        return;
+      }
+      throw insertError;
+    }
 
     res.status(200).json({
       success: true,
-      message: `Successfully borrowed "${book.title}". Please return it by ${formattedDue}.`,
+      message: `Successfully borrowed "${book.title}". Enjoy your reading!`,
       data: {
         book: updatedBook,
-        borrowRecord,
+        borrow: borrowRecord,
       },
     });
   } catch (error) {
@@ -205,7 +235,8 @@ export async function borrowBook(req: Request, res: Response<ApiResponse>, next:
 export async function returnBook(req: Request, res: Response<ApiResponse>, next: NextFunction): Promise<void> {
   try {
     const bookId = extractParam(req.params.id);
-    const { borrowerEmail, borrowId } = req.body;
+    const { userEmail, borrowerEmail, borrowId } = req.body;
+    const email = (userEmail || borrowerEmail) as string;
 
     const book = await findBookById(bookId);
     if (!book) {
@@ -219,26 +250,20 @@ export async function returnBook(req: Request, res: Response<ApiResponse>, next:
     let activeBorrow = null;
     if (borrowId && typeof borrowId === 'string') {
       activeBorrow = await findBorrowById(borrowId);
-      if (!activeBorrow || activeBorrow.status !== 'active') {
-        res.status(400).json({
-          success: false,
-          message: 'No active borrow transaction found with this ID.',
-        });
-        return;
-      }
-    } else if (borrowerEmail && typeof borrowerEmail === 'string' && borrowerEmail.trim()) {
-      activeBorrow = await findActiveBorrow(bookId, borrowerEmail);
-      if (!activeBorrow) {
-        res.status(404).json({
-          success: false,
-          message: `No active borrow record found for "${book.title}" under ${borrowerEmail}.`,
-        });
-        return;
-      }
+    } else if (email && typeof email === 'string' && email.trim()) {
+      activeBorrow = await findBorrowByBookAndUser(bookId, email);
     } else {
       res.status(400).json({
         success: false,
-        message: 'Provide either the borrowId or borrowerEmail to return this book.',
+        message: 'Please provide either the borrowId or userEmail to complete the return.',
+      });
+      return;
+    }
+
+    if (!activeBorrow) {
+      res.status(404).json({
+        success: false,
+        message: `No active borrow record found for "${book.title}".`,
       });
       return;
     }
@@ -251,7 +276,7 @@ export async function returnBook(req: Request, res: Response<ApiResponse>, next:
       message: `"${book.title}" has been successfully returned to BookNook. Thank you!`,
       data: {
         book: updatedBook,
-        borrowRecord: returnedBorrow,
+        borrow: returnedBorrow,
       },
     });
   } catch (error) {

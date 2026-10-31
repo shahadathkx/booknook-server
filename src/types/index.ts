@@ -1,35 +1,49 @@
 import { ObjectId } from 'mongodb';
 
-export type BookStatus = 'available' | 'borrowed';
+export type BookCategory = 'Fiction' | 'Science' | 'History' | 'Kids' | 'Others';
 
+export interface AddedBy {
+  name: string;
+  email: string;
+}
+
+/**
+ * Book model representing an item in the BookNook library catalog.
+ */
 export interface Book {
   _id?: ObjectId | string;
   title: string;
   author: string;
-  genre: string;
+  category: BookCategory;
+  image: string;
   description: string;
-  coverImage?: string;
   totalCopies: number;
   availableCopies: number;
-  status: BookStatus;
-  createdAt?: Date | string;
-  updatedAt?: Date | string;
+  addedBy: AddedBy;
+  createdAt: Date;
+  updatedAt?: Date;
 }
 
-export type BorrowStatus = 'active' | 'returned';
-
-export interface BorrowRecord {
+/**
+ * Borrow model representing a book checkout transaction.
+ */
+export interface Borrow {
   _id?: ObjectId | string;
   bookId: ObjectId | string;
   bookTitle: string;
-  borrowerName: string;
-  borrowerEmail: string;
-  borrowDate: Date | string;
-  dueDate: Date | string;
-  returnDate: Date | string | null;
-  status: BorrowStatus;
+  bookImage: string;
+  userEmail: string;
+  userName: string;
+  borrowDate: Date;
+  returnDate: Date | null | string;
 }
 
+// Alias for backwards compatibility
+export type BorrowRecord = Borrow;
+
+/**
+ * Standard API JSON response structure.
+ */
 export interface ApiResponse<T = any> {
   success: boolean;
   message: string;

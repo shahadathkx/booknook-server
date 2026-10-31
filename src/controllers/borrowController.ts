@@ -5,7 +5,7 @@ import {
   markRecordAsReturned,
 } from '../models/borrowModel';
 import { incrementCopies } from '../models/bookModel';
-import { ApiResponse, BorrowStatus } from '../types';
+import { ApiResponse } from '../types';
 
 function extractParam(param: string | string[] | undefined): string {
   if (Array.isArray(param)) return param[0] || '';
@@ -14,11 +14,13 @@ function extractParam(param: string | string[] | undefined): string {
 
 export async function getBorrowRecords(req: Request, res: Response<ApiResponse>, next: NextFunction): Promise<void> {
   try {
-    const { status, email, bookId } = req.query;
+    const { userEmail, email, bookId, status } = req.query;
+    const targetEmail = (userEmail || email) as string;
+
     const records = await findAllBorrows({
-      status: typeof status === 'string' ? (status as BorrowStatus) : undefined,
-      borrowerEmail: typeof email === 'string' ? email : undefined,
+      userEmail: typeof targetEmail === 'string' ? targetEmail : undefined,
       bookId: typeof bookId === 'string' ? bookId : undefined,
+      status: (status === 'active' || status === 'returned') ? status : undefined,
     });
 
     res.status(200).json({
@@ -45,7 +47,7 @@ export async function returnBorrowRecord(req: Request, res: Response<ApiResponse
       return;
     }
 
-    if (record.status === 'returned') {
+    if (record.returnDate) {
       res.status(400).json({
         success: false,
         message: 'This book loan has already been marked as returned.',
@@ -60,7 +62,7 @@ export async function returnBorrowRecord(req: Request, res: Response<ApiResponse
       success: true,
       message: `"${record.bookTitle}" has been returned successfully.`,
       data: {
-        borrowRecord: updatedRecord,
+        borrow: updatedRecord,
         book: updatedBook,
       },
     });

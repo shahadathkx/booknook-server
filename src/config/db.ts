@@ -1,16 +1,32 @@
-import { MongoClient, Db } from 'mongodb';
+import { MongoClient, Db, MongoClientOptions } from 'mongodb';
 
-let client: MongoClient | null = null;
-let db: Db | null = null;
+interface MongoCache {
+  client: MongoClient | null;
+  promise: Promise<MongoClient> | null;
+  db: Db | null;
+}
+
+// Global cache declaration to prevent multiple MongoClient connections across hot-reloads and serverless/Render container reuse
+declare global {
+  // eslint-disable-next-line no-var
+  var mongoCache: MongoCache | undefined;
+}
+
+const cached: MongoCache = global.mongoCache || {
+  client: null,
+  promise: null,
+  db: null,
+};
+
+if (!global.mongoCache) {
+  global.mongoCache = cached;
+}
 
 /**
- * Initializes and returns the MongoDB database instance.
+ * Initializes and returns the MongoDB database instance using a cached MongoClient.
+ * Crucial for serverless environments and container platforms like Render to reuse connection pools.
  */
 export async function connectToDatabase(): Promise<Db> {
-  if (db) {
-    return db;
-  }
-
   const uri = process.env.MONGODB_URI;
   if (!uri) {
     throw new Error('MONGODB_URI is not defined in environment variables.');
@@ -18,13 +34,34 @@ export async function connectToDatabase(): Promise<Db> {
 
   const dbName = process.env.DB_NAME || 'booknook';
 
+  // Return existing cached db instance if already connected
+  if (cached.db) {
+    return cached.db;
+  }
+
+  // Reuse existing connection promise or initialize a new one
+  if (!cached.promise) {
+    const options: MongoClientOptions = {
+      maxPoolSize: 10,
+      serverSelectionTimeoutMS: 5000,
+    };
+
+    const client = new MongoClient(uri, options);
+    cached.promise = client.connect().then((connectedClient) => {
+      cached.client = connectedClient;
+      return connectedClient;
+    });
+  }
+
   try {
-    client = new MongoClient(uri);
-    await client.connect();
-    db = client.db(dbName);
-    console.log(`[Database] Connected successfully to MongoDB: "${dbName}"`);
-    return db;
+    cached.client = await cached.promise;
+    cached.db = cached.client.db(dbName);
+    console.log(`[Database] Connected successfully to MongoDB: "${dbName}" (cached client)`);
+    return cached.db;
   } catch (error) {
+    cached.promise = null;
+    cached.client = null;
+    cached.db = null;
     console.error('[Database] MongoDB connection failure:', error);
     throw error;
   }
@@ -34,20 +71,34 @@ export async function connectToDatabase(): Promise<Db> {
  * Returns the currently active MongoDB database instance.
  */
 export function getDb(): Db {
-  if (!db) {
+  if (!cached.db) {
     throw new Error('Database has not been initialized. Call connectToDatabase() first.');
   }
-  return db;
+  return cached.db;
 }
 
 /**
- * Gracefully disconnects from MongoDB.
+ * Returns the cached MongoClient instance.
+ */
+export function getClient(): MongoClient {
+  if (!cached.client) {
+    throw new Error('MongoClient has not been initialized. Call connectToDatabase() first.');
+  }
+  return cached.client;
+}
+
+/**
+ * Gracefully disconnects and clears cached client references.
  */
 export async function closeDatabaseConnection(): Promise<void> {
-  if (client) {
-    await client.close();
-    client = null;
-    db = null;
-    console.log('[Database] MongoDB connection closed.');
+  if (cached.client) {
+    await cached.client.close();
+    cached.client = null;
+    cached.promise = null;
+    cached.db = null;
+    if (global.mongoCache) {
+      global.mongoCache = { client: null, promise: null, db: null };
+    }
+    console.log('[Database] MongoDB connection closed and cache cleared.');
   }
 }

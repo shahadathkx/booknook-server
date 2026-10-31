@@ -1,7 +1,7 @@
 import { ObjectId, Collection, Filter } from 'mongodb';
 import { getDb } from '../config/db';
 import { initialBooks } from '../seed/seedData';
-import { Book } from '../types';
+import { Book, BookCategory } from '../types';
 
 const COLLECTION_NAME = 'books';
 
@@ -11,10 +11,42 @@ export function getBooksCollection(): Collection<Book> {
 
 export async function initializeBooksCollection(): Promise<void> {
   const collection = getBooksCollection();
-  
-  await collection.createIndex({ title: 'text', author: 'text', genre: 'text' });
-  await collection.createIndex({ status: 1 });
-  await collection.createIndex({ createdAt: -1 });
+
+  try {
+    await collection.createIndex({ category: 1 });
+    await collection.createIndex({ availableCopies: 1 });
+    await collection.createIndex({ createdAt: -1 });
+
+    // MongoDB allows only one text index per collection; check before creating
+    const indexes = await collection.indexes();
+    const hasTextIndex = indexes.some((idx) => idx.key && (idx.key as any)._fts === 'text');
+    if (!hasTextIndex) {
+      await collection.createIndex({ title: 'text', author: 'text', description: 'text' });
+    }
+  } catch (err: any) {
+    console.warn('[Books] Index creation notice:', err.message);
+  }
+
+  // Migrate any existing books with previous schema keys (genre -> category, coverImage -> image)
+  try {
+    await collection.updateMany(
+      { category: { $exists: false } } as any,
+      [
+        {
+          $set: {
+            category: { $ifNull: ['$genre', 'Fiction'] },
+            image: { $ifNull: ['$coverImage', 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80'] },
+            addedBy: {
+              name: { $ifNull: ['$addedBy.name', 'BookNook Curator'] },
+              email: { $ifNull: ['$addedBy.email', 'curator@booknook.library'] },
+            },
+          },
+        },
+      ]
+    );
+  } catch {
+    // Non-fatal migration check
+  }
 
   const count = await collection.countDocuments();
   if (count === 0) {
@@ -24,26 +56,26 @@ export async function initializeBooksCollection(): Promise<void> {
       updatedAt: new Date(),
     }));
     await collection.insertMany(timestampedSeed as any);
-    console.log(`[Seed] Initialized ${timestampedSeed.length} curated books.`);
+    console.log(`[Seed] Initialized ${timestampedSeed.length} curated library books.`);
   }
 }
 
 export interface BookFilterOptions {
   search?: string;
-  status?: string;
-  genre?: string;
+  category?: string;
+  availableOnly?: boolean;
 }
 
-export async function findAllBooks({ search, status, genre }: BookFilterOptions = {}): Promise<Book[]> {
+export async function findAllBooks({ search, category, availableOnly }: BookFilterOptions = {}): Promise<Book[]> {
   const collection = getBooksCollection();
   const query: Filter<Book> = {};
 
-  if (status && (status === 'available' || status === 'borrowed')) {
-    query.status = status;
+  if (category && category !== 'all') {
+    query.category = { $regex: new RegExp(`^${category}$`, 'i') } as any;
   }
 
-  if (genre && genre !== 'all') {
-    query.genre = { $regex: new RegExp(`^${genre}$`, 'i') } as any;
+  if (availableOnly) {
+    query.availableCopies = { $gt: 0 } as any;
   }
 
   if (search && search.trim()) {
@@ -51,7 +83,8 @@ export async function findAllBooks({ search, status, genre }: BookFilterOptions 
     query.$or = [
       { title: { $regex: term, $options: 'i' } } as any,
       { author: { $regex: term, $options: 'i' } } as any,
-      { genre: { $regex: term, $options: 'i' } } as any,
+      { category: { $regex: term, $options: 'i' } } as any,
+      { description: { $regex: term, $options: 'i' } } as any,
     ];
   }
 
@@ -67,10 +100,11 @@ export async function findBookById(id: string): Promise<Book | null> {
 export interface CreateBookInput {
   title: string;
   author: string;
-  genre?: string;
+  category: BookCategory;
+  image?: string;
   description: string;
   totalCopies?: number;
-  coverImage?: string;
+  addedBy?: { name: string; email: string };
 }
 
 export async function insertBook(data: CreateBookInput): Promise<Book> {
@@ -81,14 +115,17 @@ export async function insertBook(data: CreateBookInput): Promise<Book> {
   const newBook: Book = {
     title: data.title.trim(),
     author: data.author.trim(),
-    genre: (data.genre || 'General').trim(),
-    description: data.description.trim(),
-    coverImage: data.coverImage && data.coverImage.trim()
-      ? data.coverImage.trim()
+    category: data.category,
+    image: data.image && data.image.trim()
+      ? data.image.trim()
       : 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80',
+    description: data.description.trim(),
     totalCopies: total,
     availableCopies: total,
-    status: 'available',
+    addedBy: {
+      name: (data.addedBy?.name || 'BookNook Curator').trim(),
+      email: (data.addedBy?.email || 'curator@booknook.library').trim().toLowerCase(),
+    },
     createdAt: now,
     updatedAt: now,
   };
@@ -108,16 +145,14 @@ export async function decrementCopies(id: string): Promise<Book | null> {
   }
 
   const updatedAvailable = book.availableCopies - 1;
-  const newStatus = updatedAvailable === 0 ? 'borrowed' : 'available';
 
   const result = await collection.findOneAndUpdate(
     { _id: objectId as any, availableCopies: { $gt: 0 } as any },
     {
       $set: {
         availableCopies: updatedAvailable,
-        status: newStatus,
         updatedAt: new Date(),
-      }
+      },
     },
     { returnDocument: 'after' }
   );
@@ -140,9 +175,8 @@ export async function incrementCopies(id: string): Promise<Book | null> {
     {
       $set: {
         availableCopies: updatedAvailable,
-        status: 'available',
         updatedAt: new Date(),
-      }
+      },
     },
     { returnDocument: 'after' }
   );
