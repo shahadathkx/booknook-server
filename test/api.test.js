@@ -219,7 +219,9 @@ test('Search and filter books by category and search keyword', async () => {
 });
 
 test('GET /api/borrows returns borrowing records list with userEmail filtering', async () => {
-  const res = await fetch(`${baseUrl}/api/borrows`);
+  const res = await fetch(`${baseUrl}/api/borrows`, {
+    headers: { Authorization: `Bearer ${authToken}` },
+  });
   assert.equal(res.status, 200);
   const json = await res.json();
   assert.equal(json.success, true);

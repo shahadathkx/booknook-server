@@ -5,7 +5,7 @@ import { connectToDatabase, closeDatabaseConnection } from './config/db';
 import { initializeBooksCollection } from './models/bookModel';
 import { initializeBorrowsCollection } from './models/borrowModel';
 import booksRouter from './routes/books';
-import borrowRoutes from './routes/borrowRoutes';
+import borrowsRouter from './routes/borrows';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 
 // Read configuration from environment variables
@@ -61,8 +61,8 @@ app.get('/', (req: Request, res: Response) => {
 // Application Routes
 app.use('/books', booksRouter);
 app.use('/api/books', booksRouter);
-app.use('/borrows', borrowRoutes);
-app.use('/api/borrows', borrowRoutes);
+app.use('/borrows', borrowsRouter);
+app.use('/api/borrows', borrowsRouter);
 
 // Error handling
 app.use(notFoundHandler);
