@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { connectToDatabase, closeDatabaseConnection } from './config/db';
 import { initializeBooksCollection } from './models/bookModel';
@@ -9,7 +9,7 @@ import borrowsRouter from './routes/borrows';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 
 // Read configuration from environment variables
-const PORT = process.env.PORT || 7000;
+const PORT = Number(process.env.PORT) || 7000;
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
 const MONGODB_URI = process.env.MONGODB_URI;
 const DB_NAME = process.env.DB_NAME || 'booknook';
@@ -39,6 +39,18 @@ app.use(
 // Body parser
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Ensure database connection singleton is ready for serverless platforms (Vercel)
+app.use(async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (process.env.MONGODB_URI) {
+      await connectToDatabase();
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 
 // GET / health route returning a JSON message
 app.get('/', (req: Request, res: Response) => {
@@ -79,7 +91,7 @@ async function startServer() {
     await initializeBooksCollection();
     await initializeBorrowsCollection();
 
-    const server = app.listen(PORT, () => {
+    const server = app.listen(PORT, '0.0.0.0', () => {
       console.log(`[BookNook Server] Running at http://localhost:${PORT}`);
       console.log(`[CORS] Configured for CLIENT_URL: ${CLIENT_URL} and http://localhost:3000`);
       if (AUTH_JWKS_URL) {

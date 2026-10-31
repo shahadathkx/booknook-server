@@ -1,147 +1,285 @@
 # BookNook Server 📚
 
-> Backend API service for **BookNook**, a small online library platform designed around three core operations: **Add a book**, **Borrow a book**, and **Return a book**.
+> Robust Express + TypeScript backend API for **BookNook**, a small online library platform ("Add a book, borrow a book, return a book"). Built with MongoDB connection pooling, BetterAuth JWKS token verification, atomic copy tracking, and full deployment readiness for Render and Vercel.
 
 ---
 
-## 🚀 Features & Endpoints
+## 🚀 Deployment
 
-All responses provide predictable, structured JSON formatted specifically for UI toast notifications and custom modal dialogs (no browser `alert()`, `confirm()`, or `prompt()` required).
+### Deploy on Render (Recommended)
 
-### 1. Catalog Management (`/api/books`)
+This repository includes a [`render.yaml`](./render.yaml) file for automatic Blueprint deployment.
 
-- **`GET /api/books`**
-  - **Query Parameters**:
-    - `search` *(optional)*: Search title, author, or genre.
-    - `status` *(optional)*: Filter by availability (`available` | `borrowed`).
-    - `genre` *(optional)*: Filter by genre category.
-  - **Response**: Array of books with real synopsis, stock numbers, and live availability.
+1. **Connect Repo**: In your Render dashboard, choose **New > Blueprint** and connect this repository.
+2. **Environment Variables**: Configure the following environment variables:
+   - `MONGODB_URI`: Your MongoDB Atlas connection string.
+   - `DB_NAME`: Database name (e.g., `booknook`).
+   - `CLIENT_URL`: URL of your frontend (e.g., `https://booknook.vercel.app` or `http://localhost:3000`).
+   - `AUTH_JWKS_URL`: BetterAuth JWKS endpoint (e.g., `https://your-app.com/api/auth/jwks`).
+3. **Manual Web Service Config (Alternative)**:
+   - **Environment**: Node
+   - **Build Command**: `npm install && npm run build`
+   - **Start Command**: `npm start`
+   - **Health Check Path**: `/`
 
-- **`POST /api/books`**
-  - **Body**:
-    ```json
-    {
-      "title": "The Pragmatic Programmer",
-      "author": "Andrew Hunt & David Thomas",
-      "genre": "Software Engineering",
-      "description": "Straight from the programming trenches, this guide examines modern development practices.",
-      "totalCopies": 3,
-      "coverImage": "https://images.unsplash.com/photo-1532012164546-f432f2e35b34?auto=format&fit=crop&w=600&q=80"
-    }
-    ```
-  - **Validation**: Strict validation on title, author, description, and positive copy count.
-
-- **`GET /api/books/:id`**
-  - Retrieves individual book details by ID.
+The server automatically listens on `process.env.PORT` bound to `0.0.0.0`.
 
 ---
 
-### 2. Borrow a Book (`POST /api/books/:id/borrow`)
+### Deploy on Vercel
 
-- **Endpoint**: `POST /api/books/:id/borrow`
-- **Body**:
-  ```json
-  {
-    "borrowerName": "Jane Doe",
-    "borrowerEmail": "jane.doe@example.com",
-    "dueDate": "2026-11-14T00:00:00.000Z"
-  }
-  ```
-- **Rules & Behavior**:
-  - Decrements `availableCopies` atomically.
-  - Automatically updates book status to `borrowed` when stock reaches `0`.
-  - Prevents duplicate active checkouts of the same book by the same borrower.
-  - Returns a user-friendly message ready for client toast notifications.
+This repository includes [`vercel.json`](./vercel.json) and [`api/index.ts`](./api/index.ts) configured for Vercel Serverless Functions:
 
----
-
-### 3. Return a Book (`POST /api/books/:id/return`)
-
-- **Endpoint**: `POST /api/books/:id/return`
-- **Body** (either `borrowId` or `borrowerEmail`):
-  ```json
-  {
-    "borrowId": "6541f71a9b1c2d3e4f5a6b7c"
-  }
-  ```
-  *or*
-  ```json
-  {
-    "borrowerEmail": "jane.doe@example.com"
-  }
-  ```
-- **Rules & Behavior**:
-  - Increments `availableCopies` up to `totalCopies`.
-  - Sets book status back to `available`.
-  - Marks loan transaction as `returned` with return timestamp.
-
----
-
-### 4. Loans & History (`/api/borrows`)
-
-- **`GET /api/borrows`**
-  - Optional filters: `?status=active`, `?email=jane.doe@example.com`.
-  - Useful for displaying a patron's active loans and return action modals.
-- **`POST /api/borrows/:id/return`**
-  - Direct return by loan record ID.
-
----
-
-## 🛠️ Project Structure
-
-```text
-booknook-server/
-├── index.js                  # Main server entry & bootstrap
-├── package.json              # Project scripts & dependencies
-├── .env.example              # Environment variables template
-├── src/
-│   ├── app.js                # Express app configuration & middleware
-│   ├── config/
-│   │   └── db.js             # MongoDB connection pool & singleton
-│   ├── controllers/
-│   │   ├── bookController.js # Add, borrow, return, and catalog handlers
-│   │   └── borrowController.js # Loan history & record return handlers
-│   ├── middleware/
-│   │   └── errorHandler.js   # Centralized error & 404 response handler
-│   ├── models/
-│   │   ├── bookModel.js      # Book collection schema, indexes & queries
-│   │   └── borrowModel.js    # Borrow record collection & state transitions
-│   ├── seed/
-│   │   └── seedData.js       # Curated initial library books (no lorem ipsum)
-│   └── types/
-│       └── index.js          # Typed contracts & JSDoc definitions
-└── test/
-    └── api.test.js           # Automated integration test suite
-```
+1. Import this repository in your Vercel Dashboard.
+2. In **Project Settings > Environment Variables**, add:
+   - `MONGODB_URI`
+   - `DB_NAME`
+   - `CLIENT_URL`
+   - `AUTH_JWKS_URL`
+3. Click **Deploy**. Vercel will build TypeScript and route all requests through `api/index.ts`. The cached MongoDB connection singleton automatically optimizes connection reuse across serverless cold starts.
 
 ---
 
 ## ⚙️ Environment Variables
 
-Create a `.env` file in the root directory based on `.env.example`:
+Copy `.env.example` to `.env` for local development:
 
 ```env
 PORT=7000
-CLIENT_ORIGIN=http://localhost:3000
+CLIENT_URL=http://localhost:3000
 MONGODB_URI=mongodb+srv://<username>:<password>@cluster.mongodb.net/?retryWrites=true&w=majority
 DB_NAME=booknook
+AUTH_JWKS_URL=https://your-auth-domain/.well-known/jwks.json
 ```
 
 ---
 
-## 🏃 Running the Application
+## 📖 API Documentation
 
-### Start Development Server
-```bash
-npm run dev
-```
+All responses return structured JSON:
+- `200` / `201` on success
+- `400` for invalid parameters or business logic failures (e.g., "Not available")
+- `401` for missing or invalid Bearer tokens
+- `403` for forbidden actions (e.g., modifying another user's book)
+- `404` for missing records or invalid ObjectIds
+- `409` for duplicate borrow attempts ("You have already borrowed this book")
 
-### Start Production Server
-```bash
-npm start
-```
+---
 
-### Run Automated Tests
+### 1. Health Check
+- **`GET /`**
+- **Auth**: Public
+- **Description**: Returns server operational status and available endpoint list.
+- **Response `200`**:
+  ```json
+  {
+    "status": "healthy",
+    "message": "BookNook Express + TypeScript API server is running smoothly.",
+    "service": "BookNook Server",
+    "timestamp": "2026-10-31T23:00:00.000Z"
+  }
+  ```
+
+---
+
+### 2. Get All Books
+- **`GET /books`** (also accessible at `/api/books`)
+- **Auth**: Public (Requires JWT only when `?email=` is supplied)
+- **Query Parameters**:
+  - `?limit=6`: Limits the number of books returned.
+  - `?sort=newest`: Sorts books by creation date descending (`createdAt: -1`).
+  - `?category=Fiction`: Filters by category (`Fiction`, `Science`, `History`, `Kids`, `Others`).
+  - `?search=tolkien`: Case-insensitive search matching `title` or `author`.
+  - `?email=user@example.com`: Returns only books added by this user. **Requires Bearer JWT** and verifies `req.user.email === email` (returns `403` if mismatched).
+- **Response `200`**:
+  ```json
+  {
+    "success": true,
+    "message": "Books retrieved successfully.",
+    "data": [
+      {
+        "_id": "67241234567890abcdef1234",
+        "title": "To Kill a Mockingbird",
+        "author": "Harper Lee",
+        "category": "Fiction",
+        "image": "https://images.unsplash.com/...",
+        "description": "A story of innocence, empathy, and racial justice in the American South.",
+        "totalCopies": 4,
+        "availableCopies": 3,
+        "addedBy": {
+          "name": "Admin",
+          "email": "curator@booknook.library"
+        },
+        "createdAt": "2026-10-31T20:00:00.000Z"
+      }
+    ],
+    "count": 1
+  }
+  ```
+
+---
+
+### 3. Get Book Details
+- **`GET /books/:id`** (also accessible at `/api/books/:id`)
+- **Auth**: Protected (Requires `Authorization: Bearer <token>`)
+- **Description**: Fetches individual book details by MongoDB ObjectId. Validates ID format and returns `404` if invalid or not found.
+- **Response `200`**:
+  ```json
+  {
+    "success": true,
+    "message": "Book details retrieved successfully.",
+    "data": { ...book }
+  }
+  ```
+
+---
+
+### 4. Add a Book
+- **`POST /books`** (also accessible at `/api/books`)
+- **Auth**: Protected (Requires `Authorization: Bearer <token>`)
+- **Description**: Adds a new book to the library catalog. Validates fields, automatically initializes `availableCopies = totalCopies`, sets `createdAt = new Date()`, and assigns `addedBy: { name, email }` strictly from the verified JWT payload.
+- **Request Body**:
+  ```json
+  {
+    "title": "The Pragmatic Programmer",
+    "author": "Andrew Hunt & David Thomas",
+    "category": "Others",
+    "image": "https://images.unsplash.com/...",
+    "description": "Straight from the programming trenches, this guide examines software development craftsmanship.",
+    "totalCopies": 3
+  }
+  ```
+- **Response `201`**:
+  ```json
+  {
+    "success": true,
+    "message": "\"The Pragmatic Programmer\" has been successfully added to the BookNook catalog.",
+    "data": { ...newBook }
+  }
+  ```
+
+---
+
+### 5. Update a Book
+- **`PATCH /books/:id`** (also accessible at `/api/books/:id`)
+- **Auth**: Protected (Only the book owner `addedBy.email === req.user.email`)
+- **Description**: Updates book details (`title`, `author`, `category`, `image`, `description`, `totalCopies`). When `totalCopies` changes, dynamically adjusts `availableCopies` by the difference (`diff = newTotal - oldTotal`), never dropping below `0`.
+- **Request Body** *(any combination)*:
+  ```json
+  {
+    "title": "The Pragmatic Programmer: 20th Anniversary Edition",
+    "totalCopies": 5
+  }
+  ```
+- **Response `200`**:
+  ```json
+  {
+    "success": true,
+    "message": "Book updated successfully.",
+    "data": { ...updatedBook }
+  }
+  ```
+
+---
+
+### 6. Delete a Book
+- **`DELETE /books/:id`** (also accessible at `/api/books/:id`)
+- **Auth**: Protected (Only the book owner `addedBy.email === req.user.email`)
+- **Description**: Deletes the specified book from the library and cascadingly removes all related borrow records from the `borrows` collection.
+- **Response `200`**:
+  ```json
+  {
+    "success": true,
+    "message": "\"The Pragmatic Programmer\" and related borrow record(s) were successfully deleted."
+  }
+  ```
+
+---
+
+### 7. Borrow a Book
+- **`POST /borrows`** (also accessible at `/api/borrows`)
+- **Auth**: Protected (Requires `Authorization: Bearer <token>`)
+- **Description**:
+  1. Finds the book.
+  2. Rejects if the user already borrowed the book (`409` "You have already borrowed this book").
+  3. Atomically decrements `availableCopies` via `updateOne({ _id, availableCopies: { $gt: 0 } }, { $inc: { availableCopies: -1 } })`. If out of stock, returns `400` "Not available".
+  4. Inserts borrow record `{ bookId, bookTitle, bookImage, userEmail, userName, borrowDate: now, returnDate: now + 7 days }`.
+  5. If insertion fails (unique compound index constraint), automatically rolls back the decrement (`$inc: +1`).
+- **Request Body**:
+  ```json
+  {
+    "bookId": "67241234567890abcdef1234"
+  }
+  ```
+- **Response `201`**:
+  ```json
+  {
+    "success": true,
+    "message": "\"To Kill a Mockingbird\" borrowed successfully. Due date: 11/7/2026.",
+    "data": {
+      "_id": "67249876543210fedcba5678",
+      "bookId": "67241234567890abcdef1234",
+      "bookTitle": "To Kill a Mockingbird",
+      "bookImage": "https://images.unsplash.com/...",
+      "userEmail": "reader@example.com",
+      "userName": "Jane Reader",
+      "borrowDate": "2026-10-31T23:00:00.000Z",
+      "returnDate": "2026-11-07T23:00:00.000Z"
+    }
+  }
+  ```
+
+---
+
+### 8. Get Logged-in User's Borrows
+- **`GET /borrows`** (also accessible at `/api/borrows`)
+- **Auth**: Protected (Requires `Authorization: Bearer <token>`)
+- **Description**: Returns all borrow records belonging exclusively to the authenticated user (`req.user.email`), sorted newest first (`borrowDate: -1`).
+- **Response `200`**:
+  ```json
+  {
+    "success": true,
+    "message": "User borrows retrieved successfully.",
+    "data": [ ...userBorrows ],
+    "count": 1
+  }
+  ```
+
+---
+
+### 9. Return a Book
+- **`DELETE /borrows/:id`** (also accessible at `/api/borrows/:id`)
+- **Auth**: Protected (Only the borrower `borrow.userEmail === req.user.email`)
+- **Description**: Deletes the borrow record and restores the book's stock by incrementing `availableCopies` by `+1` (`$inc: { availableCopies: 1 }`).
+- **Response `200`**:
+  ```json
+  {
+    "success": true,
+    "message": "\"To Kill a Mockingbird\" returned successfully and borrow record deleted."
+  }
+  ```
+
+---
+
+## 🧪 Automated Testing
+
+Run the full integration test suite with Node's native test runner:
+
 ```bash
 npm test
 ```
+
+### Test Coverage
+- **`test/books.test.js`**: Public queries, limits, sort, category filtering, search, token-scoped email access, protected routes, ownership checks, dynamic stock updates, and cascading borrow deletion.
+- **`test/borrows.test.js`**: Atomic decrement, rollback on failure, 7-day loan window, double-borrow prevention (`409`), user-scoped borrow listings, and return deletion with stock increment.
+- **`test/verifyJWT.test.js`**: BetterAuth JWKS token verification with ephemeral RSA key-pairs, header extraction, and rejection of malformed/untrusted tokens.
+- **`test/api.test.js`**: End-to-end operational health check and catalog integration.
+
+---
+
+## 📜 Development Scripts
+
+- **`npm run dev`**: Start with nodemon and ts-node on `http://localhost:7000`.
+- **`npm run build`**: Compile TypeScript into `dist/`.
+- **`npm start`**: Run production server from `dist/index.js`.
+- **`npm test`**: Run automated integration tests.
