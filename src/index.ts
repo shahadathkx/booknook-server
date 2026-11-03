@@ -8,27 +8,22 @@ import booksRouter from './routes/books';
 import borrowsRouter from './routes/borrows';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 
-// Read configuration from environment variables
+
 const PORT = Number(process.env.PORT) || 7000;
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
 const MONGODB_URI = process.env.MONGODB_URI;
 const DB_NAME = process.env.DB_NAME || 'booknook';
-const AUTH_JWKS_URL = process.env.AUTH_JWKS_URL;
 
 const app = express();
 
-// Allowed origins: CLIENT_URL, http://localhost:3000, and localhost ports
+
 const allowedOrigins = [CLIENT_URL, 'http://localhost:3000'];
 
-// Enable CORS for CLIENT_URL (and http://localhost:3000) with credentials
+
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin) || origin.startsWith('http://localhost:')) {
-        callback(null, true);
-      } else {
-        callback(null, true);
-      }
+      callback(null, !origin || allowedOrigins.includes(origin) ? origin : false);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -36,11 +31,11 @@ app.use(
   })
 );
 
-// Body parser
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Ensure database connection singleton is ready for serverless platforms (Vercel)
+
 app.use(async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (process.env.MONGODB_URI) {
@@ -52,7 +47,7 @@ app.use(async (req: Request, res: Response, next: NextFunction) => {
   }
 });
 
-// GET / health route returning a JSON message
+
 app.get('/', (req: Request, res: Response) => {
   res.status(200).json({
     status: 'healthy',
@@ -60,7 +55,7 @@ app.get('/', (req: Request, res: Response) => {
     service: 'BookNook Server',
     timestamp: new Date().toISOString(),
     endpoints: {
-      health: 'GET /',
+      health: 'GET /health',
       books: 'GET, POST /api/books',
       bookDetails: 'GET /api/books/:id',
       borrowBook: 'POST /api/books/:id/borrow',
@@ -70,17 +65,21 @@ app.get('/', (req: Request, res: Response) => {
   });
 });
 
-// Application Routes
+app.get('/health', (_req: Request, res: Response) => {
+  res.status(200).json({ status: 'healthy', message: 'BookNook server is running.' });
+});
+
+
 app.use('/books', booksRouter);
 app.use('/api/books', booksRouter);
 app.use('/borrows', borrowsRouter);
 app.use('/api/borrows', borrowsRouter);
 
-// Error handling
+
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-// Bootstrap database and start HTTP server
+
 async function startServer() {
   try {
     if (!MONGODB_URI) {
@@ -91,24 +90,17 @@ async function startServer() {
     await initializeBooksCollection();
     await initializeBorrowsCollection();
 
-    const server = app.listen(PORT, '0.0.0.0', () => {
-      console.log(`[BookNook Server] Running at http://localhost:${PORT}`);
-      console.log(`[CORS] Configured for CLIENT_URL: ${CLIENT_URL} and http://localhost:3000`);
-      if (AUTH_JWKS_URL) {
-        console.log(`[Auth] JWKS verification endpoint: ${AUTH_JWKS_URL}`);
-      }
-    });
+    const server = app.listen(PORT, '0.0.0.0');
 
-    const handleShutdown = async (signal: string) => {
-      console.log(`\n[Server] Received ${signal}. Shutting down gracefully...`);
+    const handleShutdown = async () => {
       server.close(async () => {
         await closeDatabaseConnection();
         process.exit(0);
       });
     };
 
-    process.on('SIGINT', () => handleShutdown('SIGINT'));
-    process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+    process.on('SIGINT', handleShutdown);
+    process.on('SIGTERM', handleShutdown);
 
     return server;
   } catch (error) {
@@ -117,7 +109,7 @@ async function startServer() {
   }
 }
 
-// Start server when executed directly
+
 if (typeof require !== 'undefined' && require.main === module) {
   startServer();
 }

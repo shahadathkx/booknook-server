@@ -1,18 +1,16 @@
 import { Request, Response, NextFunction } from 'express';
-import { ApiResponse } from '../types';
-
 export interface AppError extends Error {
   statusCode?: number;
   status?: number;
 }
 
-/**
- * Global error handling middleware returning structured JSON responses.
- */
+
+
+
 export function errorHandler(
   err: AppError,
   req: Request,
-  res: Response<ApiResponse>,
+  res: Response,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   next: NextFunction
 ): void {
@@ -21,19 +19,14 @@ export function errorHandler(
 
   console.error(`[Error] ${req.method} ${req.url} -> Status ${statusCode}:`, err.message);
 
-  res.status(statusCode).json({
-    success: false,
-    message,
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
-  });
+  res.status(statusCode).json({ message });
 }
 
-/**
- * 404 Not Found middleware for undefined routes.
- */
-export function notFoundHandler(req: Request, res: Response<ApiResponse>): void {
+
+
+
+export function notFoundHandler(req: Request, res: Response): void {
   res.status(404).json({
-    success: false,
     message: `Cannot ${req.method} ${req.originalUrl}. Route not found on BookNook server.`,
   });
 }
