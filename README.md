@@ -32,10 +32,10 @@ This repository includes [`vercel.json`](./vercel.json) and [`api/index.ts`](./a
 
 1. Import this repository in your Vercel Dashboard.
 2. In **Project Settings > Environment Variables**, add:
-   - `MONGODB_URI`
-   - `DB_NAME`
-   - `CLIENT_URL`
-   - `AUTH_JWKS_URL`
+   - `MONGODB_URI`: MongoDB connection string for the shared BookNook database.
+   - `DB_NAME`: database name.
+   - `CLIENT_URL`: deployed frontend origin.
+   - `AUTH_JWKS_URL`: `${CLIENT_URL}/api/auth/jwks`.
 3. Click **Deploy**. Vercel will build TypeScript and route all requests through `api/index.ts`. The cached MongoDB connection singleton automatically optimizes connection reuse across serverless cold starts.
 
 ---

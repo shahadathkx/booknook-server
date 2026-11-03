@@ -9,20 +9,32 @@ import borrowsRouter from './routes/borrows';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 
 
-const PORT = Number(process.env.PORT) || 7000;
-const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
-const MONGODB_URI = process.env.MONGODB_URI;
-const DB_NAME = process.env.DB_NAME || 'booknook';
-
 const app = express();
 
+declare global {
+  var bookNookDatabaseInitialization: Promise<void> | undefined;
+}
 
-const allowedOrigins = [CLIENT_URL, 'http://localhost:3000'];
+async function ensureDatabaseReady(): Promise<void> {
+  if (!global.bookNookDatabaseInitialization) {
+    global.bookNookDatabaseInitialization = (async () => {
+      await connectToDatabase();
+      await initializeBooksCollection();
+      await initializeBorrowsCollection();
+    })().catch((error: unknown) => {
+      global.bookNookDatabaseInitialization = undefined;
+      throw error;
+    });
+  }
 
+  await global.bookNookDatabaseInitialization;
+}
 
 app.use(
   cors({
     origin: (origin, callback) => {
+      const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+      const allowedOrigins = [clientUrl, 'http://localhost:3000'];
       callback(null, !origin || allowedOrigins.includes(origin) ? origin : false);
     },
     credentials: true,
@@ -34,18 +46,6 @@ app.use(
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-
-app.use(async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    if (process.env.MONGODB_URI) {
-      await connectToDatabase();
-    }
-    next();
-  } catch (error) {
-    next(error);
-  }
-});
 
 
 app.get('/', (req: Request, res: Response) => {
@@ -69,6 +69,14 @@ app.get('/health', (_req: Request, res: Response) => {
   res.status(200).json({ status: 'healthy', message: 'BookNook server is running.' });
 });
 
+app.use(async (_req: Request, _res: Response, next: NextFunction) => {
+  try {
+    await ensureDatabaseReady();
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.use('/books', booksRouter);
 app.use('/api/books', booksRouter);
@@ -81,16 +89,19 @@ app.use(errorHandler);
 
 
 async function startServer() {
+  if (process.env.VERCEL) {
+    return;
+  }
+
   try {
-    if (!MONGODB_URI) {
+    const port = Number(process.env.PORT) || 7000;
+    if (!process.env.MONGODB_URI) {
       console.warn('[Warning] MONGODB_URI is not defined in environment variables.');
     }
 
-    await connectToDatabase();
-    await initializeBooksCollection();
-    await initializeBorrowsCollection();
+    await ensureDatabaseReady();
 
-    const server = app.listen(PORT, '0.0.0.0');
+    const server = app.listen(port, '0.0.0.0');
 
     const handleShutdown = async () => {
       server.close(async () => {
@@ -110,7 +121,7 @@ async function startServer() {
 }
 
 
-if (typeof require !== 'undefined' && require.main === module) {
+if (!process.env.VERCEL && typeof require !== 'undefined' && require.main === module) {
   startServer();
 }
 
