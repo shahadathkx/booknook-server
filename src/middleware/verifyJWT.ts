@@ -4,12 +4,13 @@ import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
 export interface AuthenticatedUser {
   email: string;
   name: string;
+  userId: string;
   [key: string]: any;
 }
 
-/**
- * Extended Express Request interface carrying verified BetterAuth user claims.
- */
+
+
+
 export interface AuthRequest<
   P = any,
   ResBody = any,
@@ -19,7 +20,7 @@ export interface AuthRequest<
   user?: AuthenticatedUser;
 }
 
-// Augment Express Request type globally
+
 declare global {
   namespace Express {
     interface Request {
@@ -30,9 +31,9 @@ declare global {
 
 let cachedJWKS: ReturnType<typeof createRemoteJWKSet> | null = null;
 
-/**
- * Returns or initializes the cached JWKS client using AUTH_JWKS_URL.
- */
+
+
+
 function getJWKS() {
   const jwksUrl = process.env.AUTH_JWKS_URL;
   if (!jwksUrl) {
@@ -46,12 +47,12 @@ function getJWKS() {
   return cachedJWKS;
 }
 
-/**
- * Express middleware to verify BetterAuth JWT tokens via the remote JWKS endpoint.
- * - Reads "Authorization: Bearer <token>"
- * - On success attaches req.user = { email, name }
- * - On failure returns 401 JSON
- */
+
+
+
+
+
+
 export async function verifyJWT(
   req: AuthRequest,
   res: Response,
@@ -61,7 +62,6 @@ export async function verifyJWT(
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     res.status(401).json({
-      success: false,
       message: 'Unauthorized: Missing or malformed Authorization header. Expected "Bearer <token>".',
     });
     return;
@@ -70,7 +70,6 @@ export async function verifyJWT(
   const token = authHeader.substring(7).trim();
   if (!token) {
     res.status(401).json({
-      success: false,
       message: 'Unauthorized: Token is missing from Authorization header.',
     });
     return;
@@ -80,22 +79,27 @@ export async function verifyJWT(
     const jwks = getJWKS();
     const { payload } = await jwtVerify(token, jwks);
 
-    // Extract user email and name from BetterAuth JWT payload
+
     const email = (payload.email || (payload.user as any)?.email || (typeof payload.sub === 'string' ? payload.sub : '')) as string;
     const name = (payload.name || (payload.user as any)?.name || (email ? email.split('@')[0] : 'User')) as string;
+    const userId = (payload.userId || payload.id || (payload.user as any)?.id || payload.sub || email) as string;
+
+    if (!email || typeof email !== 'string' || typeof userId !== 'string' || !userId) {
+      res.status(401).json({ message: 'Unauthorized: Token does not contain a valid user identity.' });
+      return;
+    }
 
     req.user = {
       email,
       name,
+      userId,
       ...payload,
     };
 
     next();
   } catch (error: any) {
     res.status(401).json({
-      success: false,
       message: 'Unauthorized: Invalid, expired, or untrusted authentication token.',
-      error: error.message,
     });
   }
 }

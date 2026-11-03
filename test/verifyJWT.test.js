@@ -10,14 +10,14 @@ let keyPair;
 let publicJwk;
 
 test.before(async () => {
-  // Generate an ephemeral RSA key pair for testing JWKS verification
+
   keyPair = await generateKeyPair('RS256');
   publicJwk = await exportJWK(keyPair.publicKey);
   publicJwk.kid = 'test-key-id-1';
   publicJwk.alg = 'RS256';
   publicJwk.use = 'sig';
 
-  // Start an ephemeral JWKS HTTP server
+
   await new Promise((resolve) => {
     jwksServer = http.createServer((req, res) => {
       if (req.url === '/jwks.json') {
@@ -70,7 +70,7 @@ test('verifyJWT rejects request without Authorization header', async () => {
 
   assert.equal(nextCalled, false);
   assert.equal(res.statusCode, 401);
-  assert.equal(res.jsonData.success, false);
+  assert.deepEqual(Object.keys(res.jsonData), ['message']);
   assert.match(res.jsonData.message, /missing or malformed/i);
 });
 
@@ -83,7 +83,7 @@ test('verifyJWT rejects non-Bearer Authorization header', async () => {
 
   assert.equal(nextCalled, false);
   assert.equal(res.statusCode, 401);
-  assert.equal(res.jsonData.success, false);
+  assert.deepEqual(Object.keys(res.jsonData), ['message']);
 });
 
 test('verifyJWT rejects invalid / untrusted token', async () => {
@@ -95,12 +95,12 @@ test('verifyJWT rejects invalid / untrusted token', async () => {
 
   assert.equal(nextCalled, false);
   assert.equal(res.statusCode, 401);
-  assert.equal(res.jsonData.success, false);
+  assert.deepEqual(Object.keys(res.jsonData), ['message']);
   assert.match(res.jsonData.message, /invalid, expired, or untrusted/i);
 });
 
 test('verifyJWT successfully verifies BetterAuth JWT and attaches req.user', async () => {
-  // Sign a valid JWT with the test private key and matching kid
+
   const token = await new SignJWT({
     email: 'reader@booknook.library',
     name: 'Jane Reader',

@@ -7,9 +7,9 @@ export interface AddedBy {
   email: string;
 }
 
-/**
- * Book model representing an item in the BookNook library catalog.
- */
+
+
+
 export interface Book {
   _id?: ObjectId | string;
   title: string;
@@ -24,28 +24,31 @@ export interface Book {
   updatedAt?: Date;
 }
 
-/**
- * Borrow model representing a book checkout transaction.
- */
+
+
+
 export interface Borrow {
   _id?: ObjectId | string;
+  userId: string;
   bookId: ObjectId | string;
   bookTitle: string;
   bookImage: string;
   userEmail: string;
   userName: string;
-  borrowDate: Date;
-  returnDate: Date | null | string;
+  borrowedAt: Date;
+  returnedAt: Date | null;
+  borrowDate?: Date;
+  returnDate?: Date | null | string;
 }
 
-// Alias for backwards compatibility
+
 export type BorrowRecord = Borrow;
 
-/**
- * Standard API JSON response structure.
- */
+
+
+
 export interface ApiResponse<T = any> {
-  success: boolean;
+  success?: boolean;
   message: string;
   data?: T;
   count?: number;
