@@ -22,7 +22,7 @@ let ownerToken;
 let strangerToken;
 
 test.before(async () => {
-  // 1. Setup ephemeral JWKS server for BetterAuth JWT verification
+
   keyPair = await generateKeyPair('RS256');
   publicJwk = await exportJWK(keyPair.publicKey);
   publicJwk.kid = 'books-test-key-1';
@@ -47,7 +47,7 @@ test.before(async () => {
     });
   });
 
-  // Generate tokens for owner and stranger
+
   ownerToken = await new SignJWT({ email: OWNER_EMAIL, name: 'Owner User' })
     .setProtectedHeader({ alg: 'RS256', kid: 'books-test-key-1' })
     .setIssuedAt()
@@ -60,7 +60,7 @@ test.before(async () => {
     .setExpirationTime('2h')
     .sign(keyPair.privateKey);
 
-  // 2. Connect DB & start Express
+
   await connectToDatabase();
   await initializeBooksCollection();
   await initializeBorrowsCollection();
@@ -85,20 +85,20 @@ test.after(async () => {
 });
 
 test('GET /books: public route supports ?limit, ?sort=newest, ?category, ?search', async () => {
-  // Public request without token
+
   const res = await fetch(`${baseUrl}/books?limit=6&sort=newest`);
   assert.equal(res.status, 200);
   const json = await res.json();
   assert.equal(json.success, true);
   assert.ok(json.data.length <= 6);
 
-  // Filter by category
+
   const catRes = await fetch(`${baseUrl}/books?category=Fiction`);
   assert.equal(catRes.status, 200);
   const catJson = await catRes.json();
   assert.ok(catJson.data.every(b => b.category === 'Fiction'));
 
-  // Search case-insensitive
+
   const searchRes = await fetch(`${baseUrl}/books?search=harper`);
   assert.equal(searchRes.status, 200);
   const searchJson = await searchRes.json();
@@ -106,33 +106,30 @@ test('GET /books: public route supports ?limit, ?sort=newest, ?category, ?search
   assert.match(searchJson.data[0].author, /harper/i);
 });
 
-test('GET /books?email=: requires JWT and ensures email matches token email', async () => {
-  // 1. Calling ?email without JWT returns 401
-  const noTokenRes = await fetch(`${baseUrl}/books?email=${OWNER_EMAIL}`);
+test("GET /books/my: requires JWT and only returns the authenticated user's books", async () => {
+  const noTokenRes = await fetch(`${baseUrl}/books/my`);
   assert.equal(noTokenRes.status, 401);
-  const noTokenJson = await noTokenRes.json();
-  assert.equal(noTokenJson.success, false);
 
-  // 2. Calling ?email with mismatched token returns 403 Forbidden
-  const mismatchRes = await fetch(`${baseUrl}/books?email=${OWNER_EMAIL}`, {
-    headers: { Authorization: `Bearer ${strangerToken}` },
-  });
-  assert.equal(mismatchRes.status, 403);
-  const mismatchJson = await mismatchRes.json();
-  assert.equal(mismatchJson.success, false);
-  assert.match(mismatchJson.message, /forbidden/i);
+  const publicListRes = await fetch(`${baseUrl}/books?email=${OWNER_EMAIL}`);
+  assert.equal(publicListRes.status, 200);
 
-  // 3. Calling ?email with matching token returns 200
-  const matchRes = await fetch(`${baseUrl}/books?email=${OWNER_EMAIL}`, {
+  const ownerRes = await fetch(`${baseUrl}/books/my`, {
     headers: { Authorization: `Bearer ${ownerToken}` },
   });
-  assert.equal(matchRes.status, 200);
-  const matchJson = await matchRes.json();
-  assert.equal(matchJson.success, true);
+  assert.equal(ownerRes.status, 200);
+  const ownerJson = await ownerRes.json();
+  assert.ok(ownerJson.data.every(book => book.addedBy?.email?.toLowerCase() === OWNER_EMAIL));
+
+  const strangerRes = await fetch(`${baseUrl}/books/my`, {
+    headers: { Authorization: `Bearer ${strangerToken}` },
+  });
+  assert.equal(strangerRes.status, 200);
+  const strangerJson = await strangerRes.json();
+  assert.ok(strangerJson.data.every(book => book.addedBy?.email?.toLowerCase() === STRANGER_EMAIL));
 });
 
 test('POST /books (protected): validates fields, sets copies, createdAt, and addedBy from token', async () => {
-  // Missing token -> 401
+
   const noToken = await fetch(`${baseUrl}/books`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -140,7 +137,7 @@ test('POST /books (protected): validates fields, sets copies, createdAt, and add
   });
   assert.equal(noToken.status, 401);
 
-  // Invalid category -> 400
+
   const badCategory = await fetch(`${baseUrl}/books`, {
     method: 'POST',
     headers: {
@@ -157,14 +154,14 @@ test('POST /books (protected): validates fields, sets copies, createdAt, and add
   });
   assert.equal(badCategory.status, 400);
 
-  // Valid creation
+
   const validPayload = {
     title: 'The Silmarillion',
     author: 'J.R.R. Tolkien',
     category: 'Fiction',
     description: 'A collection of mythopoeic stories detailing the creation of Eä and the history of Middle-earth.',
     totalCopies: 4,
-    // Attempt to spoof addedBy in body: should be ignored!
+
     addedBy: { name: 'Spoofer', email: 'spoofer@hacker.io' },
   };
 
@@ -187,34 +184,38 @@ test('POST /books (protected): validates fields, sets copies, createdAt, and add
   assert.equal(createdBook.availableCopies, 4, 'availableCopies should equal totalCopies');
   assert.ok(createdBook.createdAt);
 
-  // Strict check: addedBy MUST come from token (ownerToken), not spoofed body
+
   assert.equal(createdBook.addedBy.email, OWNER_EMAIL);
   assert.equal(createdBook.addedBy.name, 'Owner User');
 });
 
-test('GET /books/:id (protected): validates ObjectId, returns 404 if missing/invalid', async () => {
-  // Missing token -> 401
-  const noAuth = await fetch(`${baseUrl}/books/invalid-id`);
-  assert.equal(noAuth.status, 401);
+test('GET /api/books/:id (public): validates ObjectId and retrieves listed books without auth', async () => {
 
-  // Invalid ObjectId -> 404
-  const invalidIdRes = await fetch(`${baseUrl}/books/not-an-id`, {
+  const noAuth = await fetch(`${baseUrl}/api/books/invalid-id`);
+  assert.equal(noAuth.status, 400);
+  assert.deepEqual(await noAuth.json(), { message: 'Invalid book ID.' });
+
+
+  const invalidIdRes = await fetch(`${baseUrl}/api/books/not-an-id`, {
     headers: { Authorization: `Bearer ${ownerToken}` },
   });
-  assert.equal(invalidIdRes.status, 404);
+  assert.equal(invalidIdRes.status, 400);
 
-  // Non-existent valid ObjectId -> 404
-  const nonExistentRes = await fetch(`${baseUrl}/books/6541f71a9b1c2d3e4f5a6b7c`, {
+
+  const nonExistentRes = await fetch(`${baseUrl}/api/books/6541f71a9b1c2d3e4f5a6b7c`, {
     headers: { Authorization: `Bearer ${ownerToken}` },
   });
   assert.equal(nonExistentRes.status, 404);
 
-  // Existing book -> 200
+
   const booksRes = await fetch(`${baseUrl}/books?limit=1`);
   const booksJson = await booksRes.json();
   const book = booksJson.data[0];
 
-  const getRes = await fetch(`${baseUrl}/books/${book._id}`, {
+  const publicGetRes = await fetch(`${baseUrl}/api/books/${book._id}`);
+  assert.equal(publicGetRes.status, 200);
+
+  const getRes = await fetch(`${baseUrl}/api/books/${book._id}`, {
     headers: { Authorization: `Bearer ${ownerToken}` },
   });
   assert.equal(getRes.status, 200);
@@ -223,7 +224,7 @@ test('GET /books/:id (protected): validates ObjectId, returns 404 if missing/inv
 });
 
 test('PATCH /books/:id (protected): only owner can update; adjusts availableCopies by difference', async () => {
-  // 1. Create a book by owner
+
   const createRes = await fetch(`${baseUrl}/books`, {
     method: 'POST',
     headers: {
@@ -240,7 +241,7 @@ test('PATCH /books/:id (protected): only owner can update; adjusts availableCopi
   });
   const book = (await createRes.json()).data;
 
-  // 2. Attempt update by non-owner -> 403 Forbidden
+
   const strangerUpdate = await fetch(`${baseUrl}/books/${book._id}`, {
     method: 'PATCH',
     headers: {
@@ -251,7 +252,7 @@ test('PATCH /books/:id (protected): only owner can update; adjusts availableCopi
   });
   assert.equal(strangerUpdate.status, 403);
 
-  // 3. Update by owner: change title and increase totalCopies from 5 to 8 (diff = +3)
+
   const ownerUpdate = await fetch(`${baseUrl}/books/${book._id}`, {
     method: 'PATCH',
     headers: {
@@ -269,7 +270,7 @@ test('PATCH /books/:id (protected): only owner can update; adjusts availableCopi
   assert.equal(updateJson.data.totalCopies, 8);
   assert.equal(updateJson.data.availableCopies, 8, 'availableCopies should increase by +3');
 
-  // 4. Update totalCopies downwards to 2 (diff = -6 -> available should adjust and never below 0)
+
   const reduceUpdate = await fetch(`${baseUrl}/books/${book._id}`, {
     method: 'PATCH',
     headers: {
@@ -285,7 +286,7 @@ test('PATCH /books/:id (protected): only owner can update; adjusts availableCopi
 });
 
 test('DELETE /books/:id (protected): only owner can delete; also removes related borrows', async () => {
-  // 1. Create a book by owner
+
   const createRes = await fetch(`${baseUrl}/books`, {
     method: 'POST',
     headers: {
@@ -302,7 +303,7 @@ test('DELETE /books/:id (protected): only owner can delete; also removes related
   });
   const book = (await createRes.json()).data;
 
-  // Insert a test borrow record linked to this book
+
   await getBorrowsCollection().insertOne({
     bookId: book._id,
     bookTitle: book.title,
@@ -313,25 +314,25 @@ test('DELETE /books/:id (protected): only owner can delete; also removes related
     returnDate: null,
   });
 
-  // 2. Stranger tries to delete -> 403 Forbidden
+
   const strangerDel = await fetch(`${baseUrl}/books/${book._id}`, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${strangerToken}` },
   });
   assert.equal(strangerDel.status, 403);
 
-  // 3. Owner deletes -> 200 OK
+
   const ownerDel = await fetch(`${baseUrl}/books/${book._id}`, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${ownerToken}` },
   });
   assert.equal(ownerDel.status, 200);
 
-  // Verify book is gone from db
+
   const deletedBook = await getBooksCollection().findOne({ _id: book._id });
   assert.equal(deletedBook, null);
 
-  // Verify related borrows are removed from borrows collection
+
   const remainingBorrows = await getBorrowsCollection().find({
     $or: [{ bookId: book._id }, { bookId: new (await import('mongodb')).ObjectId(book._id) }],
   }).toArray();

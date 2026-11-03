@@ -17,7 +17,7 @@ export async function initializeBooksCollection(): Promise<void> {
     await collection.createIndex({ availableCopies: 1 });
     await collection.createIndex({ createdAt: -1 });
 
-    // MongoDB allows only one text index per collection; check before creating
+
     const indexes = await collection.indexes();
     const hasTextIndex = indexes.some((idx) => idx.key && (idx.key as any)._fts === 'text');
     if (!hasTextIndex) {
@@ -27,7 +27,7 @@ export async function initializeBooksCollection(): Promise<void> {
     console.warn('[Books] Index creation notice:', err.message);
   }
 
-  // Migrate any existing books with previous schema keys (genre -> category, coverImage -> image)
+
   try {
     await collection.updateMany(
       { category: { $exists: false } } as any,
@@ -45,7 +45,7 @@ export async function initializeBooksCollection(): Promise<void> {
       ]
     );
   } catch {
-    // Non-fatal migration check
+
   }
 
   const count = await collection.countDocuments();
@@ -56,7 +56,6 @@ export async function initializeBooksCollection(): Promise<void> {
       updatedAt: new Date(),
     }));
     await collection.insertMany(timestampedSeed as any);
-    console.log(`[Seed] Initialized ${timestampedSeed.length} curated library books.`);
   }
 }
 
@@ -135,51 +134,32 @@ export async function insertBook(data: CreateBookInput): Promise<Book> {
 }
 
 export async function decrementCopies(id: string): Promise<Book | null> {
-  if (!ObjectId.isValid(id)) return null;
+  if (!/^[a-f\d]{24}$/i.test(id) || !ObjectId.isValid(id)) return null;
   const collection = getBooksCollection();
   const objectId = new ObjectId(id);
-
-  const book = await collection.findOne({ _id: objectId as any });
-  if (!book || book.availableCopies <= 0) {
-    return null;
-  }
-
-  const updatedAvailable = book.availableCopies - 1;
-
-  const result = await collection.findOneAndUpdate(
+  return collection.findOneAndUpdate(
     { _id: objectId as any, availableCopies: { $gt: 0 } as any },
     {
-      $set: {
-        availableCopies: updatedAvailable,
-        updatedAt: new Date(),
-      },
+      $inc: { availableCopies: -1 },
+      $set: { updatedAt: new Date() },
     },
     { returnDocument: 'after' }
-  );
-
-  return result as Book | null;
+  ) as Promise<Book | null>;
 }
 
 export async function incrementCopies(id: string): Promise<Book | null> {
-  if (!ObjectId.isValid(id)) return null;
+  if (!/^[a-f\d]{24}$/i.test(id) || !ObjectId.isValid(id)) return null;
   const collection = getBooksCollection();
   const objectId = new ObjectId(id);
-
-  const book = await collection.findOne({ _id: objectId as any });
-  if (!book) return null;
-
-  const updatedAvailable = Math.min(book.totalCopies, book.availableCopies + 1);
-
-  const result = await collection.findOneAndUpdate(
-    { _id: objectId as any },
+  return collection.findOneAndUpdate(
     {
-      $set: {
-        availableCopies: updatedAvailable,
-        updatedAt: new Date(),
-      },
+      _id: objectId as any,
+      $expr: { $lt: ['$availableCopies', '$totalCopies'] },
+    },
+    {
+      $inc: { availableCopies: 1 },
+      $set: { updatedAt: new Date() },
     },
     { returnDocument: 'after' }
-  );
-
-  return result as Book | null;
+  ) as Promise<Book | null>;
 }

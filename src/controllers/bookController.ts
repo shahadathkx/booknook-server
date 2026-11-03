@@ -174,7 +174,7 @@ export async function borrowBook(req: Request, res: Response<ApiResponse>, next:
       return;
     }
 
-    // Proactive check before insert
+
     const existingBorrow = await findBorrowByBookAndUser(bookId, email);
     if (existingBorrow && (!existingBorrow.returnDate || existingBorrow.returnDate === null)) {
       res.status(409).json({
@@ -184,7 +184,7 @@ export async function borrowBook(req: Request, res: Response<ApiResponse>, next:
       return;
     }
 
-    // Decrement available copies
+
     const updatedBook = await decrementCopies(bookId);
     if (!updatedBook) {
       res.status(409).json({
@@ -205,10 +205,10 @@ export async function borrowBook(req: Request, res: Response<ApiResponse>, next:
         returnDate: returnDate ? new Date(returnDate) : null,
       });
     } catch (insertError: any) {
-      // Revert decrement if unique index constraint triggers
+
       await incrementCopies(bookId);
 
-      // Handle MongoDB E11000 duplicate key error on compound unique index { bookId: 1, userEmail: 1 }
+
       if (insertError.code === 11000) {
         res.status(409).json({
           success: false,

@@ -1,6 +1,6 @@
 import { Router, Response, NextFunction } from 'express';
 import { ObjectId, Filter } from 'mongodb';
-import { getBooksCollection, decrementCopies, incrementCopies } from '../models/bookModel';
+import { getBooksCollection, incrementCopies } from '../models/bookModel';
 import { getBorrowsCollection, insertBorrowRecord, findBorrowByBookAndUser, markRecordAsReturned } from '../models/borrowModel';
 import { verifyJWT, AuthRequest } from '../middleware/verifyJWT';
 import { Book, BookCategory, ApiResponse } from '../types';
@@ -13,64 +13,26 @@ function extractParam(param: string | string[] | undefined): string {
   return param || '';
 }
 
-/**
- * GET /books (public)
- * Supports query params:
- * - ?limit=6
- * - ?sort=newest (sorts by createdAt desc)
- * - ?category=
- * - ?search= (case-insensitive across title and author)
- * - ?email= (only that user's books; requires JWT and must match token email)
- */
+
+
+
+
+
+
+
+
 router.get('/', async (req: AuthRequest, res: Response<ApiResponse>, next: NextFunction): Promise<void> => {
   try {
-    const { limit, sort, category, search, email } = req.query;
+    const { limit, sort, category, search } = req.query;
 
     const query: Filter<Book> = {};
 
-    // 1. If ?email is supplied, require JWT authentication and ensure email matches token
-    if (email) {
-      if (typeof email !== 'string' || !email.trim()) {
-        res.status(400).json({
-          success: false,
-          message: 'Invalid email query parameter provided.',
-        });
-        return;
-      }
 
-      // Check and verify JWT token
-      await new Promise<void>((resolve, reject) => {
-        verifyJWT(req, res, (err) => {
-          if (err) return reject(err);
-          resolve();
-        });
-      });
-
-      // If response already ended (e.g. 401 from verifyJWT), stop execution
-      if (res.headersSent) {
-        return;
-      }
-
-      const tokenEmail = req.user?.email?.toLowerCase();
-      const requestedEmail = email.trim().toLowerCase();
-
-      if (!tokenEmail || tokenEmail !== requestedEmail) {
-        res.status(403).json({
-          success: false,
-          message: 'Forbidden: You can only view books added by your own authenticated account.',
-        });
-        return;
-      }
-
-      query['addedBy.email'] = requestedEmail;
-    }
-
-    // 2. Filter by category
     if (category && typeof category === 'string' && category.trim() && category.toLowerCase() !== 'all') {
       query.category = { $regex: new RegExp(`^${category.trim()}$`, 'i') } as any;
     }
 
-    // 3. Search by title or author (case-insensitive)
+
     if (search && typeof search === 'string' && search.trim()) {
       const term = search.trim();
       query.$or = [
@@ -79,13 +41,13 @@ router.get('/', async (req: AuthRequest, res: Response<ApiResponse>, next: NextF
       ];
     }
 
-    // 4. Sorting: ?sort=newest or default
+
     const sortOption: any = {};
     if (sort === 'newest' || !sort) {
       sortOption.createdAt = -1;
     }
 
-    // 5. Query execution & limit
+
     let cursor = getBooksCollection().find(query).sort(sortOption);
 
     if (limit) {
@@ -108,29 +70,47 @@ router.get('/', async (req: AuthRequest, res: Response<ApiResponse>, next: NextF
   }
 });
 
-/**
- * GET /books/:id (protected)
- * Validates ObjectId, returns 404 if missing or not found.
- */
-router.get('/:id', verifyJWT, async (req: AuthRequest, res: Response<ApiResponse>, next: NextFunction): Promise<void> => {
+
+
+
+
+router.get('/my', verifyJWT, async (req: AuthRequest, res: Response<ApiResponse>, next: NextFunction): Promise<void> => {
+  try {
+    const email = req.user!.email.trim().toLowerCase();
+    const books = await getBooksCollection()
+      .find({ 'addedBy.email': email })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.status(200).json({
+      success: true,
+      message: 'Your books retrieved successfully.',
+      data: books,
+      count: books.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+
+
+
+
+router.get('/:id', async (req: AuthRequest, res: Response<ApiResponse>, next: NextFunction): Promise<void> => {
   try {
     const id = extractParam(req.params.id);
 
-    if (!ObjectId.isValid(id)) {
-      res.status(404).json({
-        success: false,
-        message: 'Book not found (invalid ID format).',
-      });
+    if (!/^[a-f\d]{24}$/i.test(id) || !ObjectId.isValid(id)) {
+      res.status(400).json({ message: 'Invalid book ID.' });
       return;
     }
 
     const book = await getBooksCollection().findOne({ _id: new ObjectId(id) as any });
 
     if (!book) {
-      res.status(404).json({
-        success: false,
-        message: 'The requested book was not found in the catalog.',
-      });
+      res.status(404).json({ message: 'Book not found.' });
       return;
     }
 
@@ -144,62 +124,47 @@ router.get('/:id', verifyJWT, async (req: AuthRequest, res: Response<ApiResponse
   }
 });
 
-/**
- * POST /books (protected)
- * Validates fields, sets availableCopies = totalCopies, sets createdAt = new Date(),
- * takes addedBy from the token (not from the request body).
- */
+
+
+
+
+
 router.post('/', verifyJWT, async (req: AuthRequest, res: Response<ApiResponse>, next: NextFunction): Promise<void> => {
   try {
     const { title, author, category, image, description, totalCopies } = req.body;
 
-    // Validate title
+
     if (!title || typeof title !== 'string' || !title.trim()) {
-      res.status(400).json({
-        success: false,
-        message: 'Book title is required.',
-      });
+      res.status(400).json({ message: 'Book title is required.' });
       return;
     }
 
-    // Validate author
+
     if (!author || typeof author !== 'string' || !author.trim()) {
-      res.status(400).json({
-        success: false,
-        message: 'Author name is required.',
-      });
+      res.status(400).json({ message: 'Author name is required.' });
       return;
     }
 
-    // Validate category
+
     if (!category || !VALID_CATEGORIES.includes(category as BookCategory)) {
-      res.status(400).json({
-        success: false,
-        message: `Category is required and must be one of: ${VALID_CATEGORIES.join(', ')}.`,
-      });
+      res.status(400).json({ message: `Category is required and must be one of: ${VALID_CATEGORIES.join(', ')}.` });
       return;
     }
 
-    // Validate description
+
     if (!description || typeof description !== 'string' || !description.trim()) {
-      res.status(400).json({
-        success: false,
-        message: 'A meaningful description is required.',
-      });
+      res.status(400).json({ message: 'A meaningful description is required.' });
       return;
     }
 
-    // Validate totalCopies
+
     const copies = Number(totalCopies);
     if (isNaN(copies) || copies < 1 || !Number.isInteger(copies)) {
-      res.status(400).json({
-        success: false,
-        message: 'totalCopies must be a positive integer of at least 1.',
-      });
+      res.status(400).json({ message: 'totalCopies must be a positive integer of at least 1.' });
       return;
     }
 
-    // Set addedBy strictly from the authenticated token
+
     const tokenUser = req.user!;
     const addedBy = {
       name: tokenUser.name || tokenUser.email.split('@')[0],
@@ -233,43 +198,34 @@ router.post('/', verifyJWT, async (req: AuthRequest, res: Response<ApiResponse>,
   }
 });
 
-/**
- * PATCH /books/:id (protected)
- * Only the owner (addedBy.email === token email) can update.
- * Allows title, author, category, image, description, totalCopies
- * (adjusts availableCopies by the difference, never below 0).
- */
+
+
+
+
+
+
 router.patch('/:id', verifyJWT, async (req: AuthRequest, res: Response<ApiResponse>, next: NextFunction): Promise<void> => {
   try {
     const id = extractParam(req.params.id);
 
-    if (!ObjectId.isValid(id)) {
-      res.status(404).json({
-        success: false,
-        message: 'Book not found (invalid ID format).',
-      });
+    if (!/^[a-f\d]{24}$/i.test(id) || !ObjectId.isValid(id)) {
+      res.status(400).json({ message: 'Invalid book ID.' });
       return;
     }
 
     const book = await getBooksCollection().findOne({ _id: new ObjectId(id) as any });
 
     if (!book) {
-      res.status(404).json({
-        success: false,
-        message: 'The book you are attempting to update was not found.',
-      });
+      res.status(404).json({ message: 'Book not found.' });
       return;
     }
 
-    // Ownership verification
+
     const tokenEmail = req.user?.email?.toLowerCase();
     const ownerEmail = book.addedBy?.email?.toLowerCase();
 
     if (!tokenEmail || tokenEmail !== ownerEmail) {
-      res.status(403).json({
-        success: false,
-        message: 'Forbidden: Only the user who added this book can update it.',
-      });
+      res.status(403).json({ message: 'Forbidden: Only the user who added this book can update it.' });
       return;
     }
 
@@ -278,7 +234,7 @@ router.patch('/:id', verifyJWT, async (req: AuthRequest, res: Response<ApiRespon
 
     if (title !== undefined) {
       if (typeof title !== 'string' || !title.trim()) {
-        res.status(400).json({ success: false, message: 'Title cannot be empty.' });
+        res.status(400).json({ message: 'Title cannot be empty.' });
         return;
       }
       updates.title = title.trim();
@@ -286,7 +242,7 @@ router.patch('/:id', verifyJWT, async (req: AuthRequest, res: Response<ApiRespon
 
     if (author !== undefined) {
       if (typeof author !== 'string' || !author.trim()) {
-        res.status(400).json({ success: false, message: 'Author cannot be empty.' });
+        res.status(400).json({ message: 'Author cannot be empty.' });
         return;
       }
       updates.author = author.trim();
@@ -294,10 +250,7 @@ router.patch('/:id', verifyJWT, async (req: AuthRequest, res: Response<ApiRespon
 
     if (category !== undefined) {
       if (!VALID_CATEGORIES.includes(category as BookCategory)) {
-        res.status(400).json({
-          success: false,
-          message: `Category must be one of: ${VALID_CATEGORIES.join(', ')}.`,
-        });
+        res.status(400).json({ message: `Category must be one of: ${VALID_CATEGORIES.join(', ')}.` });
         return;
       }
       updates.category = category as BookCategory;
@@ -305,7 +258,7 @@ router.patch('/:id', verifyJWT, async (req: AuthRequest, res: Response<ApiRespon
 
     if (image !== undefined) {
       if (typeof image !== 'string' || !image.trim()) {
-        res.status(400).json({ success: false, message: 'Image URL cannot be empty.' });
+        res.status(400).json({ message: 'Image URL cannot be empty.' });
         return;
       }
       updates.image = image.trim();
@@ -313,20 +266,17 @@ router.patch('/:id', verifyJWT, async (req: AuthRequest, res: Response<ApiRespon
 
     if (description !== undefined) {
       if (typeof description !== 'string' || !description.trim()) {
-        res.status(400).json({ success: false, message: 'Description cannot be empty.' });
+        res.status(400).json({ message: 'Description cannot be empty.' });
         return;
       }
       updates.description = description.trim();
     }
 
-    // Adjust totalCopies and availableCopies by the difference, never below 0
+
     if (totalCopies !== undefined) {
       const newTotal = Number(totalCopies);
       if (isNaN(newTotal) || newTotal < 0 || !Number.isInteger(newTotal)) {
-        res.status(400).json({
-          success: false,
-          message: 'totalCopies must be a non-negative integer.',
-        });
+        res.status(400).json({ message: 'totalCopies must be a non-negative integer.' });
         return;
       }
 
@@ -355,50 +305,41 @@ router.patch('/:id', verifyJWT, async (req: AuthRequest, res: Response<ApiRespon
   }
 });
 
-/**
- * DELETE /books/:id (protected)
- * Only the owner can delete; also removes related borrows.
- */
+
+
+
+
 router.delete('/:id', verifyJWT, async (req: AuthRequest, res: Response<ApiResponse>, next: NextFunction): Promise<void> => {
   try {
     const id = extractParam(req.params.id);
 
-    if (!ObjectId.isValid(id)) {
-      res.status(404).json({
-        success: false,
-        message: 'Book not found (invalid ID format).',
-      });
+    if (!/^[a-f\d]{24}$/i.test(id) || !ObjectId.isValid(id)) {
+      res.status(400).json({ message: 'Invalid book ID.' });
       return;
     }
 
     const book = await getBooksCollection().findOne({ _id: new ObjectId(id) as any });
 
     if (!book) {
-      res.status(404).json({
-        success: false,
-        message: 'The book you are attempting to delete was not found.',
-      });
+      res.status(404).json({ message: 'Book not found.' });
       return;
     }
 
-    // Ownership verification
+
     const tokenEmail = req.user?.email?.toLowerCase();
     const ownerEmail = book.addedBy?.email?.toLowerCase();
 
     if (!tokenEmail || tokenEmail !== ownerEmail) {
-      res.status(403).json({
-        success: false,
-        message: 'Forbidden: Only the user who added this book can delete it.',
-      });
+      res.status(403).json({ message: 'Forbidden: Only the user who added this book can delete it.' });
       return;
     }
 
     const bookObjectId = new ObjectId(id);
 
-    // Delete the book
+
     await getBooksCollection().deleteOne({ _id: bookObjectId as any });
 
-    // Remove all related borrow records (handles both ObjectId and string bookId)
+
     const deleteBorrowsResult = await getBorrowsCollection().deleteMany({
       $or: [
         { bookId: bookObjectId as any },
@@ -415,110 +356,144 @@ router.delete('/:id', verifyJWT, async (req: AuthRequest, res: Response<ApiRespo
   }
 });
 
-/**
- * POST /books/:id/borrow (protected)
- * Loan checkout action
- */
+
+
+
+
 router.post('/:id/borrow', verifyJWT, async (req: AuthRequest, res: Response<ApiResponse>, next: NextFunction): Promise<void> => {
   try {
     const bookId = extractParam(req.params.id);
-    const userEmail = req.body.userEmail || req.user?.email;
-    const userName = req.body.userName || req.user?.name;
-    const { returnDate } = req.body;
-
-    if (!ObjectId.isValid(bookId)) {
-      res.status(404).json({ success: false, message: 'Book not found.' });
+    if (!/^[a-f\d]{24}$/i.test(bookId) || !ObjectId.isValid(bookId)) {
+      res.status(400).json({ message: 'Invalid book ID.' });
       return;
     }
 
-    const book = await getBooksCollection().findOne({ _id: new ObjectId(bookId) as any });
+    const bookObjectId = new ObjectId(bookId);
+    const userId = req.user!.userId;
+    const userEmail = req.user!.email.trim().toLowerCase();
+    const userName = req.user!.name || userEmail.split('@')[0];
+    const books = getBooksCollection();
+    const borrows = getBorrowsCollection();
+    const book = await books.findOne({ _id: bookObjectId as any });
     if (!book) {
-      res.status(404).json({ success: false, message: 'Book not found.' });
+      res.status(404).json({ message: 'Book not found.' });
       return;
     }
 
-    if (book.availableCopies <= 0) {
-      res.status(409).json({ success: false, message: `"${book.title}" is currently out of stock.` });
+    const existingBorrow = await borrows.findOne({
+      bookId: bookObjectId,
+      $and: [
+        { $or: [{ userId }, { userEmail }] },
+        {
+          $or: [
+            { returnedAt: null, userId: { $exists: true } },
+            { returnedAt: { $exists: false }, returnDate: null },
+          ],
+        },
+      ],
+    });
+    if (existingBorrow) {
+      res.status(409).json({ message: 'You have already borrowed this book' });
       return;
     }
 
-    // Check duplicate
-    const existingBorrow = await findBorrowByBookAndUser(bookId, userEmail);
-    if (existingBorrow && !existingBorrow.returnDate) {
-      res.status(409).json({ success: false, message: `You have already borrowed "${book.title}".` });
-      return;
-    }
-
-    const updatedBook = await decrementCopies(bookId);
+    const updatedBook = await books.findOneAndUpdate(
+      { _id: bookObjectId, availableCopies: { $gt: 0 } },
+      { $inc: { availableCopies: -1 } },
+      { returnDocument: 'after' }
+    );
     if (!updatedBook) {
-      res.status(409).json({ success: false, message: `"${book.title}" is no longer available.` });
+      res.status(400).json({ message: 'Not available' });
       return;
     }
 
-    let borrowRecord;
+    const borrowedAt = new Date();
+    const dueDate = new Date(borrowedAt.getTime() + 7 * 24 * 60 * 60 * 1000);
     try {
-      borrowRecord = await insertBorrowRecord({
+      const borrowRecord = await insertBorrowRecord({
         bookId,
         bookTitle: book.title,
         bookImage: book.image,
+        userId,
         userEmail,
         userName,
-        returnDate: returnDate ? new Date(returnDate) : null,
+        borrowedAt,
+        returnedAt: null,
+        returnDate: dueDate,
+      });
+
+      res.status(200).json({
+        success: true,
+        message: `Successfully borrowed "${book.title}".`,
+        data: { book: updatedBook, borrow: borrowRecord },
       });
     } catch (insertErr: any) {
-      await incrementCopies(bookId);
+      await books.updateOne({ _id: bookObjectId }, { $inc: { availableCopies: 1 } });
       if (insertErr.code === 11000) {
-        res.status(409).json({ success: false, message: `You have already borrowed "${book.title}".` });
+        res.status(409).json({ message: 'You have already borrowed this book' });
         return;
       }
       throw insertErr;
     }
-
-    res.status(200).json({
-      success: true,
-      message: `Successfully borrowed "${book.title}".`,
-      data: { book: updatedBook, borrow: borrowRecord },
-    });
   } catch (error) {
     next(error);
   }
 });
 
-/**
- * POST /books/:id/return (protected)
- * Return book action
- */
+
+
+
+
 router.post('/:id/return', verifyJWT, async (req: AuthRequest, res: Response<ApiResponse>, next: NextFunction): Promise<void> => {
   try {
     const bookId = extractParam(req.params.id);
-    const email = req.user?.email || req.body.userEmail;
+    const email = req.user!.email.trim().toLowerCase();
     const { borrowId } = req.body;
 
-    if (!ObjectId.isValid(bookId)) {
-      res.status(404).json({ success: false, message: 'Book not found.' });
+    if (!/^[a-f\d]{24}$/i.test(bookId) || !ObjectId.isValid(bookId)) {
+      res.status(400).json({ message: 'Invalid book ID.' });
       return;
     }
 
     const book = await getBooksCollection().findOne({ _id: new ObjectId(bookId) as any });
     if (!book) {
-      res.status(404).json({ success: false, message: 'Book not found.' });
+      res.status(404).json({ message: 'Book not found.' });
       return;
     }
 
     let activeBorrow = null;
     if (borrowId) {
+      if (typeof borrowId !== 'string' || !/^[a-f\d]{24}$/i.test(borrowId) || !ObjectId.isValid(borrowId)) {
+        res.status(400).json({ message: 'Invalid borrow ID.' });
+        return;
+      }
       const borrows = getBorrowsCollection();
       activeBorrow = await borrows.findOne({ _id: new ObjectId(borrowId) as any });
     } else if (email) {
       activeBorrow = await findBorrowByBookAndUser(bookId, email);
     }
 
-    if (!activeBorrow) {
-      res.status(404).json({ success: false, message: 'No active borrow record found for this book.' });
+    if (!activeBorrow || activeBorrow.bookId.toString() !== bookId) {
+      res.status(404).json({ message: 'No active borrow record found for this book.' });
+      return;
+    }
+
+    if (activeBorrow.userId !== req.user!.userId && activeBorrow.userEmail.trim().toLowerCase() !== email) {
+      res.status(403).json({ message: 'You can only return your own borrow records.' });
+      return;
+    }
+
+    if (activeBorrow.returnedAt || (!activeBorrow.userId && activeBorrow.returnDate)) {
+      res.status(400).json({ message: 'This borrow has already been returned.' });
       return;
     }
 
     const returnedBorrow = await markRecordAsReturned(activeBorrow._id!.toString());
+    if (!returnedBorrow) {
+      res.status(400).json({ message: 'This borrow has already been returned.' });
+      return;
+    }
+
     const updatedBook = await incrementCopies(bookId);
 
     res.status(200).json({
