@@ -22,7 +22,7 @@ let tokenAlice;
 let tokenBob;
 
 test.before(async () => {
-  // 1. Setup ephemeral JWKS server for BetterAuth JWT verification
+
   keyPair = await generateKeyPair('RS256');
   publicJwk = await exportJWK(keyPair.publicKey);
   publicJwk.kid = 'borrows-test-key-1';
@@ -47,20 +47,20 @@ test.before(async () => {
     });
   });
 
-  // Generate tokens for Alice and Bob
-  tokenAlice = await new SignJWT({ email: USER_A_EMAIL, name: 'Alice Walker' })
+
+  tokenAlice = await new SignJWT({ email: USER_A_EMAIL, name: 'Alice Walker', userId: 'alice-user-id' })
     .setProtectedHeader({ alg: 'RS256', kid: 'borrows-test-key-1' })
     .setIssuedAt()
     .setExpirationTime('2h')
     .sign(keyPair.privateKey);
 
-  tokenBob = await new SignJWT({ email: USER_B_EMAIL, name: 'Bob Dylan' })
+  tokenBob = await new SignJWT({ email: USER_B_EMAIL, name: 'Bob Dylan', userId: 'bob-user-id' })
     .setProtectedHeader({ alg: 'RS256', kid: 'borrows-test-key-1' })
     .setIssuedAt()
     .setExpirationTime('2h')
     .sign(keyPair.privateKey);
 
-  // 2. Connect DB & start Express
+
   await connectToDatabase();
   await initializeBooksCollection();
   await initializeBorrowsCollection();
@@ -85,7 +85,7 @@ test.after(async () => {
 });
 
 test('POST /borrows (protected): atomic decrement, rollback on failure, and duplicate prevention (409)', async () => {
-  // 1. Missing token -> 401
+
   const noAuth = await fetch(`${baseUrl}/borrows`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -93,7 +93,7 @@ test('POST /borrows (protected): atomic decrement, rollback on failure, and dupl
   });
   assert.equal(noAuth.status, 401);
 
-  // 2. Create a test book with exactly 1 available copy
+
   const insertBookRes = await getBooksCollection().insertOne({
     title: 'Atomic Habits Limited Edition',
     author: 'James Clear',
@@ -107,7 +107,7 @@ test('POST /borrows (protected): atomic decrement, rollback on failure, and dupl
   });
   const bookId = insertBookRes.insertedId.toString();
 
-  // 3. User Alice borrows the book -> 201 Created
+
   const aliceBorrow = await fetch(`${baseUrl}/borrows`, {
     method: 'POST',
     headers: {
@@ -121,18 +121,21 @@ test('POST /borrows (protected): atomic decrement, rollback on failure, and dupl
   assert.equal(aliceJson.success, true);
   assert.equal(aliceJson.data.userEmail, USER_A_EMAIL);
   assert.equal(aliceJson.data.userName, 'Alice Walker');
+  assert.equal(aliceJson.data.userId, 'alice-user-id');
+  assert.ok(aliceJson.data.borrowedAt);
+  assert.equal(aliceJson.data.returnedAt, null);
   assert.ok(aliceJson.data.borrowDate);
   assert.ok(aliceJson.data.returnDate);
 
-  // Verify returnDate is approximately 7 days ahead
+
   const diffDays = Math.round((new Date(aliceJson.data.returnDate).getTime() - new Date(aliceJson.data.borrowDate).getTime()) / (1000 * 60 * 60 * 24));
   assert.equal(diffDays, 7);
 
-  // Check availableCopies is now 0 in the database
+
   const bookAfterBorrow = await getBooksCollection().findOne({ _id: insertBookRes.insertedId });
   assert.equal(bookAfterBorrow.availableCopies, 0);
 
-  // 4. Alice tries to borrow the same book again -> 409 "You have already borrowed this book"
+
   const duplicateBorrow = await fetch(`${baseUrl}/borrows`, {
     method: 'POST',
     headers: {
@@ -145,11 +148,11 @@ test('POST /borrows (protected): atomic decrement, rollback on failure, and dupl
   const dupJson = await duplicateBorrow.json();
   assert.equal(dupJson.message, 'You have already borrowed this book');
 
-  // Verify copies did not change
+
   const bookAfterDup = await getBooksCollection().findOne({ _id: insertBookRes.insertedId });
   assert.equal(bookAfterDup.availableCopies, 0);
 
-  // 5. User Bob tries to borrow the out-of-stock book -> 400 "Not available"
+
   const bobBorrow = await fetch(`${baseUrl}/borrows`, {
     method: 'POST',
     headers: {
@@ -164,7 +167,7 @@ test('POST /borrows (protected): atomic decrement, rollback on failure, and dupl
 });
 
 test('GET /borrows (protected): returns only the borrows of the logged-in user, newest first', async () => {
-  // Query with Alice's token
+
   const aliceRes = await fetch(`${baseUrl}/borrows`, {
     headers: { Authorization: `Bearer ${tokenAlice}` },
   });
@@ -173,8 +176,9 @@ test('GET /borrows (protected): returns only the borrows of the logged-in user, 
   assert.equal(aliceData.success, true);
   assert.ok(Array.isArray(aliceData.data));
   assert.ok(aliceData.data.every(b => b.userEmail === USER_A_EMAIL));
+  assert.ok(aliceData.data.every(b => b.returnedAt === null && b.book?.title));
 
-  // Query with Bob's token (Bob has not borrowed yet)
+
   const bobRes = await fetch(`${baseUrl}/borrows`, {
     headers: { Authorization: `Bearer ${tokenBob}` },
   });
@@ -184,8 +188,45 @@ test('GET /borrows (protected): returns only the borrows of the logged-in user, 
   assert.equal(bobData.count, 0);
 });
 
+test('POST /api/borrows/:id/return returns an active borrow exactly once', async () => {
+  const invalidReturn = await fetch(`${baseUrl}/api/borrows/not-an-objectid/return`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + tokenAlice },
+  });
+  assert.equal(invalidReturn.status, 400);
+  assert.deepEqual(await invalidReturn.json(), { message: 'Invalid borrow ID.' });
+
+  const aliceRes = await fetch(`${baseUrl}/api/borrows`, {
+    headers: { Authorization: 'Bearer ' + tokenAlice },
+  });
+  const aliceBorrows = (await aliceRes.json()).data;
+  const activeBorrow = aliceBorrows.find(b => b.returnedAt === null);
+  assert.ok(activeBorrow, 'Alice should have an active borrow to return');
+
+  const bookId = activeBorrow.bookId;
+  const before = await getBooksCollection().findOne({ _id: new (await import('mongodb')).ObjectId(bookId) });
+  const returnRes = await fetch(`${baseUrl}/api/borrows/${activeBorrow._id}/return`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + tokenAlice },
+  });
+  assert.equal(returnRes.status, 200);
+  const returned = await returnRes.json();
+  assert.ok(returned.data.borrow.returnedAt);
+  assert.equal(returned.data.book.availableCopies, before.availableCopies + 1);
+
+  const after = await getBooksCollection().findOne({ _id: new (await import('mongodb')).ObjectId(bookId) });
+  assert.equal(after.availableCopies, before.availableCopies + 1);
+
+  const secondReturn = await fetch(`${baseUrl}/api/borrows/${activeBorrow._id}/return`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + tokenAlice },
+  });
+  assert.equal(secondReturn.status, 400);
+  assert.deepEqual(await secondReturn.json(), { message: 'This borrow has already been returned.' });
+});
+
 test('DELETE /borrows/:id (protected): only owner can delete; increments availableCopies by +1', async () => {
-  // 1. Create a book with 2 copies and borrow it for Bob
+
   const bookRes = await getBooksCollection().insertOne({
     title: 'The Hobbit Special',
     author: 'J.R.R. Tolkien',
@@ -209,29 +250,29 @@ test('DELETE /borrows/:id (protected): only owner can delete; increments availab
   });
   const borrowRecord = (await borrowRes.json()).data;
 
-  // Book copies should now be 1
+
   let bookInDb = await getBooksCollection().findOne({ _id: bookRes.insertedId });
   assert.equal(bookInDb.availableCopies, 1);
 
-  // 2. Alice tries to delete Bob's borrow record -> 403 Forbidden
+
   const aliceDel = await fetch(`${baseUrl}/borrows/${borrowRecord._id}`, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${tokenAlice}` },
   });
   assert.equal(aliceDel.status, 403);
 
-  // 3. Bob deletes his own borrow record -> 200 OK
+
   const bobDel = await fetch(`${baseUrl}/borrows/${borrowRecord._id}`, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${tokenBob}` },
   });
   assert.equal(bobDel.status, 200);
 
-  // 4. Verify borrow record is deleted from collection
+
   const deletedBorrow = await getBorrowsCollection().findOne({ _id: new (await import('mongodb')).ObjectId(borrowRecord._id) });
   assert.equal(deletedBorrow, null);
 
-  // 5. Verify book availableCopies incremented by +1 back to 2
+
   bookInDb = await getBooksCollection().findOne({ _id: bookRes.insertedId });
   assert.equal(bookInDb.availableCopies, 2);
 });

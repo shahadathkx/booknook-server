@@ -1,9 +1,13 @@
 import { Router, Response, NextFunction } from 'express';
 import { ObjectId } from 'mongodb';
 import { getBooksCollection } from '../models/bookModel';
-import { getBorrowsCollection } from '../models/borrowModel';
+import {
+  findActiveBorrowsByUser,
+  getBorrowsCollection,
+  insertBorrowRecord,
+} from '../models/borrowModel';
 import { verifyJWT, AuthRequest } from '../middleware/verifyJWT';
-import { Borrow, ApiResponse } from '../types';
+import { ApiResponse, Borrow } from '../types';
 
 const router = Router();
 
@@ -12,194 +16,251 @@ function extractParam(param: string | string[] | undefined): string {
   return param || '';
 }
 
-/**
- * POST /borrows (protected)
- * Steps:
- * 1. Find the book.
- * 2. Reject if the user already borrowed it (duplicate key error -> 409 "You have already borrowed this book").
- * 3. Atomically decrement availableCopies using updateOne({_id, availableCopies: {$gt: 0}}, {$inc: {availableCopies: -1}}),
- *    and if nothing matched return 400 "Not available".
- * 4. Insert borrow {bookId, bookTitle, bookImage, userEmail, userName, borrowDate: now, returnDate: now + 7 days}.
- * 5. If the insert fails, roll the decrement back.
- */
+function isObjectId(value: string): boolean {
+  return /^[a-f\d]{24}$/i.test(value) && ObjectId.isValid(value);
+}
+
+function ownsBorrow(borrow: Borrow, userId: string, userEmail: string): boolean {
+  return borrow.userId === userId || borrow.userEmail?.trim().toLowerCase() === userEmail;
+}
+
 router.post('/', verifyJWT, async (req: AuthRequest, res: Response<ApiResponse>, next: NextFunction): Promise<void> => {
   const { bookId } = req.body;
 
-  if (!bookId || typeof bookId !== 'string' || !ObjectId.isValid(bookId)) {
-    res.status(400).json({
-      success: false,
-      message: 'A valid bookId is required in the request body.',
-    });
+  if (typeof bookId !== 'string' || !isObjectId(bookId)) {
+    res.status(400).json({ message: 'A valid bookId is required in the request body.' });
     return;
   }
 
-  const booksCollection = getBooksCollection();
-  const borrowsCollection = getBorrowsCollection();
+  const bookObjectId = new ObjectId(bookId);
+  const userId = req.user!.userId;
   const userEmail = req.user!.email.trim().toLowerCase();
   const userName = req.user!.name || userEmail.split('@')[0];
-  const bookObjectId = new ObjectId(bookId);
 
   try {
-    // 1. Find the book
-    const book = await booksCollection.findOne({ _id: bookObjectId as any });
+    const books = getBooksCollection();
+    const borrows = getBorrowsCollection();
+    const book = await books.findOne({ _id: bookObjectId });
+
     if (!book) {
-      res.status(404).json({
-        success: false,
-        message: 'Book not found.',
-      });
+      res.status(404).json({ message: 'Book not found.' });
       return;
     }
 
-    // 2. Reject if the user already borrowed it
-    const existingBorrow = await borrowsCollection.findOne({
-      bookId: bookObjectId as any,
-      userEmail,
+    const existingBorrow = await borrows.findOne({
+      bookId: bookObjectId,
+      $and: [
+        { $or: [{ userId }, { userEmail }] },
+        {
+          $or: [
+            { returnedAt: null, userId: { $exists: true } },
+            { returnedAt: { $exists: false }, returnDate: null },
+          ],
+        },
+      ],
     });
+
     if (existingBorrow) {
-      res.status(409).json({
-        success: false,
-        message: 'You have already borrowed this book',
-      });
+      res.status(409).json({ message: 'You have already borrowed this book' });
       return;
     }
 
-    // 3. Atomically decrement availableCopies using updateOne
-    const updateResult = await booksCollection.updateOne(
-      { _id: bookObjectId as any, availableCopies: { $gt: 0 } as any },
-      { $inc: { availableCopies: -1 } } as any
+    const decrement = await books.updateOne(
+      { _id: bookObjectId, availableCopies: { $gt: 0 } },
+      { $inc: { availableCopies: -1 } }
     );
 
-    // If nothing matched, return 400 "Not available"
-    if (updateResult.matchedCount === 0) {
-      res.status(400).json({
-        success: false,
-        message: 'Not available',
-      });
+    if (decrement.matchedCount === 0) {
+      res.status(400).json({ message: 'Not available' });
       return;
     }
 
-    // 4. Insert borrow {bookId, bookTitle, bookImage, userEmail, userName, borrowDate: now, returnDate: now + 7 days}
-    const now = new Date();
-    const returnDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 days loan duration
-
-    const newBorrow: Borrow = {
-      bookId: bookObjectId,
-      bookTitle: book.title,
-      bookImage: book.image,
-      userEmail,
-      userName,
-      borrowDate: now,
-      returnDate,
-    };
+    const borrowedAt = new Date();
+    const dueDate = new Date(borrowedAt.getTime() + 7 * 24 * 60 * 60 * 1000);
 
     try {
-      const insertResult = await borrowsCollection.insertOne(newBorrow as any);
-      newBorrow._id = insertResult.insertedId;
+      const borrow = await insertBorrowRecord({
+        bookId,
+        bookTitle: book.title,
+        bookImage: book.image,
+        userId,
+        userEmail,
+        userName,
+        borrowedAt,
+        returnedAt: null,
+        returnDate: dueDate,
+      });
 
       res.status(201).json({
         success: true,
-        message: `"${book.title}" borrowed successfully. Due date: ${returnDate.toLocaleDateString()}.`,
-        data: newBorrow,
+        message: `"${book.title}" borrowed successfully.`,
+        data: borrow,
       });
-    } catch (insertError: any) {
-      // 5. If the insert fails, roll the decrement back
-      await booksCollection.updateOne(
-        { _id: bookObjectId as any },
-        { $inc: { availableCopies: 1 } } as any
-      );
+    } catch (error) {
+      await books.updateOne({ _id: bookObjectId }, { $inc: { availableCopies: 1 } });
 
-      // Handle duplicate key error code 11000 from unique compound index
-      if (insertError.code === 11000) {
-        res.status(409).json({
-          success: false,
-          message: 'You have already borrowed this book',
-        });
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 11000) {
+        res.status(409).json({ message: 'You have already borrowed this book' });
         return;
       }
 
-      throw insertError;
+      throw error;
     }
   } catch (error) {
     next(error);
   }
 });
 
-/**
- * GET /borrows (protected)
- * Only the borrows of the logged-in user (email from token), newest first.
- */
 router.get('/', verifyJWT, async (req: AuthRequest, res: Response<ApiResponse>, next: NextFunction): Promise<void> => {
   try {
-    const userEmail = req.user!.email.trim().toLowerCase();
-    const borrowsCollection = getBorrowsCollection();
-
-    const userBorrows = await borrowsCollection
-      .find({ userEmail })
-      .sort({ borrowDate: -1 })
-      .toArray();
+    const borrows = await findActiveBorrowsByUser(req.user!.userId, req.user!.email);
 
     res.status(200).json({
       success: true,
-      message: 'User borrows retrieved successfully.',
-      data: userBorrows,
-      count: userBorrows.length,
+      message: 'Active borrows retrieved successfully.',
+      data: borrows,
+      count: borrows.length,
     });
   } catch (error) {
     next(error);
   }
 });
 
-/**
- * DELETE /borrows/:id (protected)
- * Only the owner of that borrow; deletes it and $inc availableCopies by +1.
- */
-router.delete('/:id', verifyJWT, async (req: AuthRequest, res: Response<ApiResponse>, next: NextFunction): Promise<void> => {
+router.post('/:id/return', verifyJWT, async (req: AuthRequest, res: Response<ApiResponse>, next: NextFunction): Promise<void> => {
+  const id = extractParam(req.params.id);
+  if (!isObjectId(id)) {
+    res.status(400).json({ message: 'Invalid borrow ID.' });
+    return;
+  }
+
   try {
-    const id = extractParam(req.params.id);
-
-    if (!ObjectId.isValid(id)) {
-      res.status(404).json({
-        success: false,
-        message: 'Borrow record not found (invalid ID format).',
-      });
-      return;
-    }
-
-    const borrowsCollection = getBorrowsCollection();
-    const booksCollection = getBooksCollection();
+    const borrows = getBorrowsCollection();
+    const books = getBooksCollection();
+    const userId = req.user!.userId;
     const userEmail = req.user!.email.trim().toLowerCase();
+    const borrowObjectId = new ObjectId(id);
+    const borrow = await borrows.findOne({ _id: borrowObjectId });
 
-    // 1. Find the borrow record
-    const borrow = await borrowsCollection.findOne({ _id: new ObjectId(id) as any });
     if (!borrow) {
-      res.status(404).json({
-        success: false,
-        message: 'Borrow record not found.',
-      });
+      res.status(404).json({ message: 'Borrow record not found.' });
       return;
     }
 
-    // 2. Only the owner of that borrow can delete it
-    if (borrow.userEmail.toLowerCase() !== userEmail) {
-      res.status(403).json({
-        success: false,
-        message: 'Forbidden: You can only return and delete your own borrow records.',
-      });
+    if (!ownsBorrow(borrow, userId, userEmail)) {
+      res.status(403).json({ message: 'You can only return your own borrow records.' });
       return;
     }
 
-    // 3. Delete the borrow record
-    await borrowsCollection.deleteOne({ _id: new ObjectId(id) as any });
+    if (borrow.returnedAt || (!borrow.userId && borrow.returnDate)) {
+      res.status(400).json({ message: 'This borrow has already been returned.' });
+      return;
+    }
 
-    // 4. $inc availableCopies by +1
-    await booksCollection.updateOne(
-      { _id: new ObjectId(borrow.bookId) as any },
-      { $inc: { availableCopies: 1 } } as any
+    const returnedAt = new Date();
+    const updatedBorrow = await borrows.findOneAndUpdate(
+      {
+        _id: borrowObjectId,
+        $and: [
+          { $or: [{ userId }, { userEmail }] },
+          {
+            $or: [
+              { returnedAt: null, userId: { $exists: true } },
+              { returnedAt: { $exists: false }, returnDate: null },
+            ],
+          },
+        ],
+      },
+      { $set: { returnedAt, returnDate: returnedAt } },
+      { returnDocument: 'after' }
     );
+
+    if (!updatedBorrow) {
+      res.status(400).json({ message: 'This borrow has already been returned.' });
+      return;
+    }
+
+    const bookId = borrow.bookId.toString();
+    if (!isObjectId(bookId)) {
+      await borrows.updateOne(
+        { _id: borrowObjectId },
+        { $set: { returnedAt: null, returnDate: borrow.returnDate ?? null } }
+      );
+      res.status(404).json({ message: 'Book not found.' });
+      return;
+    }
+
+    try {
+      const updatedBook = await books.findOneAndUpdate(
+        { _id: new ObjectId(bookId) },
+        { $inc: { availableCopies: 1 } },
+        { returnDocument: 'after' }
+      );
+
+      if (!updatedBook) {
+        await borrows.updateOne(
+          { _id: borrowObjectId },
+          { $set: { returnedAt: null, returnDate: borrow.returnDate ?? null } }
+        );
+        res.status(404).json({ message: 'Book not found.' });
+        return;
+      }
+
+      res.status(200).json({
+        success: true,
+        message: `"${borrow.bookTitle}" returned successfully.`,
+        data: { borrow: updatedBorrow, book: updatedBook },
+      });
+    } catch (error) {
+      await borrows.updateOne(
+        { _id: borrowObjectId },
+        { $set: { returnedAt: null, returnDate: borrow.returnDate ?? null } }
+      );
+      throw error;
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete('/:id', verifyJWT, async (req: AuthRequest, res: Response<ApiResponse>, next: NextFunction): Promise<void> => {
+  const id = extractParam(req.params.id);
+  if (!isObjectId(id)) {
+    res.status(400).json({ message: 'Invalid borrow ID.' });
+    return;
+  }
+
+  try {
+    const borrows = getBorrowsCollection();
+    const books = getBooksCollection();
+    const borrowObjectId = new ObjectId(id);
+    const borrow = await borrows.findOne({ _id: borrowObjectId });
+
+    if (!borrow) {
+      res.status(404).json({ message: 'Borrow record not found.' });
+      return;
+    }
+
+    if (!ownsBorrow(borrow, req.user!.userId, req.user!.email.trim().toLowerCase())) {
+      res.status(403).json({ message: 'You can only return your own borrow records.' });
+      return;
+    }
+
+    if (borrow.returnedAt) {
+      res.status(400).json({ message: 'This borrow has already been returned.' });
+      return;
+    }
+
+    const deleted = await borrows.deleteOne({ _id: borrowObjectId });
+    if (deleted.deletedCount === 1) {
+      await books.updateOne(
+        { _id: new ObjectId(borrow.bookId.toString()) },
+        { $inc: { availableCopies: 1 } }
+      );
+    }
 
     res.status(200).json({
       success: true,
-      message: `"${borrow.bookTitle}" returned successfully and borrow record deleted.`,
+      message: `"${borrow.bookTitle}" returned successfully.`,
     });
   } catch (error) {
     next(error);

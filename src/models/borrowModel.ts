@@ -8,14 +8,14 @@ export function getBorrowsCollection(): Collection<Borrow> {
   return getDb().collection<Borrow>(COLLECTION_NAME);
 }
 
-/**
- * Initializes borrows collection schema indexes on startup:
- * Creates a UNIQUE compound index on borrows { bookId: 1, userEmail: 1 } to prevent double borrowing.
- */
+
+
+
+
 export async function initializeBorrowsCollection(): Promise<void> {
   const collection = getBorrowsCollection();
 
-  // Migrate any legacy document fields from earlier test iterations if present
+
   try {
     await collection.updateMany(
       { userEmail: { $exists: false }, borrowerEmail: { $exists: true } } as any,
@@ -30,10 +30,10 @@ export async function initializeBorrowsCollection(): Promise<void> {
       ]
     );
   } catch {
-    // Non-fatal migration check
+
   }
 
-  // Deduplicate any existing identical active loans before applying unique index
+
   try {
     const duplicates = await collection.aggregate([
       { $group: { _id: { bookId: '$bookId', userEmail: '$userEmail' }, count: { $sum: 1 }, ids: { $push: '$_id' } } },
@@ -45,28 +45,43 @@ export async function initializeBorrowsCollection(): Promise<void> {
       await collection.deleteMany({ _id: { $in: idsToDelete } });
     }
   } catch {
-    // Ignore aggregation error if empty
+
   }
 
-  // Create UNIQUE compound index on borrows { bookId: 1, userEmail: 1 } to prevent double borrowing
+  const indexes = await collection.indexes();
+  if (indexes.some((index) => index.name === 'unique_book_user_borrow')) {
+    await collection.dropIndex('unique_book_user_borrow');
+  }
+
+
   await collection.createIndex(
-    { bookId: 1, userEmail: 1 },
-    { unique: true, name: 'unique_book_user_borrow' }
+    { bookId: 1, userId: 1 },
+    {
+      unique: true,
+      name: 'unique_active_book_user_borrow',
+      partialFilterExpression: {
+        userId: { $type: 'string' },
+        returnedAt: { $type: 'null' },
+      },
+    }
   );
 
-  // Additional lookup indexes
-  await collection.createIndex({ userEmail: 1 });
-  await collection.createIndex({ borrowDate: -1 });
 
-  console.log('[Borrows] Compound UNIQUE index on { bookId: 1, userEmail: 1 } initialized successfully.');
+  await collection.createIndex({ userId: 1, returnedAt: 1 });
+  await collection.createIndex({ userEmail: 1 });
+  await collection.createIndex({ borrowedAt: -1 });
+
 }
 
 export interface CreateBorrowInput {
   bookId: string;
   bookTitle: string;
   bookImage: string;
+  userId?: string;
   userEmail: string;
   userName: string;
+  borrowedAt?: Date;
+  returnedAt?: Date | null;
   borrowDate?: Date;
   returnDate?: Date | null;
 }
@@ -75,22 +90,30 @@ export async function insertBorrowRecord({
   bookId,
   bookTitle,
   bookImage,
+  userId,
   userEmail,
   userName,
+  borrowedAt,
+  returnedAt,
   borrowDate,
   returnDate = null,
 }: CreateBorrowInput): Promise<Borrow> {
   const collection = getBorrowsCollection();
   const normalizedEmail = userEmail.trim().toLowerCase();
+  const loanDate = borrowedAt || borrowDate || new Date();
+  const loanReturnDate = returnedAt !== undefined ? returnedAt : null;
 
   const newBorrow: Borrow = {
+    userId: userId || normalizedEmail,
     bookId: new ObjectId(bookId),
     bookTitle,
     bookImage,
     userEmail: normalizedEmail,
     userName: userName.trim(),
-    borrowDate: borrowDate || new Date(),
-    returnDate: returnDate || null,
+    borrowedAt: loanDate,
+    returnedAt: loanReturnDate,
+    borrowDate: loanDate,
+    returnDate: returnDate || loanReturnDate,
   };
 
   const result = await collection.insertOne(newBorrow as any);
@@ -115,11 +138,19 @@ export async function findBorrowByBookAndUser(bookId: string, userEmail: string)
 export async function markRecordAsReturned(id: string): Promise<Borrow | null> {
   if (!ObjectId.isValid(id)) return null;
   const collection = getBorrowsCollection();
+  const returnedAt = new Date();
   const result = await collection.findOneAndUpdate(
-    { _id: new ObjectId(id) as any },
+    {
+      _id: new ObjectId(id) as any,
+      $or: [
+        { returnedAt: null },
+        { returnedAt: { $exists: false }, returnDate: null },
+      ],
+    },
     {
       $set: {
-        returnDate: new Date(),
+        returnedAt,
+        returnDate: returnedAt,
       },
     },
     { returnDocument: 'after' }
@@ -159,4 +190,42 @@ export async function findAllBorrows({ userEmail, bookId, status }: BorrowFilter
   }
 
   return collection.find(query).sort({ borrowDate: -1 }).toArray();
+}
+
+export interface BorrowWithBook extends Borrow {
+  book: Record<string, unknown> | null;
+}
+
+export async function findActiveBorrowsByUser(userId: string, userEmail: string): Promise<BorrowWithBook[]> {
+  const collection = getBorrowsCollection();
+  return collection.aggregate<BorrowWithBook>([
+    {
+      $match: {
+        $and: [
+          { $or: [{ userId }, { userEmail: userEmail.trim().toLowerCase() }] },
+          {
+            $or: [
+              { returnedAt: null, userId: { $exists: true } },
+              { returnedAt: { $exists: false }, returnDate: null },
+            ],
+          },
+        ],
+      },
+    },
+    { $sort: { borrowedAt: -1, borrowDate: -1 } },
+    {
+      $lookup: {
+        from: 'books',
+        localField: 'bookId',
+        foreignField: '_id',
+        as: 'bookDetails',
+      },
+    },
+    {
+      $set: {
+        book: { $ifNull: [{ $arrayElemAt: ['$bookDetails', 0] }, null] },
+      },
+    },
+    { $unset: 'bookDetails' },
+  ]).toArray();
 }
