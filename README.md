@@ -1,4 +1,4 @@
-# BookNook Server 📚
+# BookNook Server (booknook-server) 📚
 
 > Robust Express + TypeScript backend API for **BookNook**, a small online library platform ("Add a book, borrow a book, return a book"). Built with MongoDB connection pooling, BetterAuth JWKS token verification, atomic copy tracking, and full deployment readiness for Render and Vercel.
 
