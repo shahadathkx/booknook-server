@@ -15,7 +15,7 @@ let jwksServer;
 let authToken;
 
 test.before(async () => {
-  // Ephemeral JWKS server
+
   const keyPair = await generateKeyPair('RS256');
   const publicJwk = await exportJWK(keyPair.publicKey);
   publicJwk.kid = 'api-test-key-1';
@@ -80,6 +80,19 @@ test('GET / returns health route JSON message', async () => {
   assert.match(data.message, /Express \+ TypeScript API server/i);
 });
 
+test('GET /health and local frontend CORS configuration', async () => {
+  const res = await fetch(`${baseUrl}/health`, {
+    headers: { Origin: 'http://localhost:3000' },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('access-control-allow-origin'), 'http://localhost:3000');
+  assert.equal(res.headers.get('access-control-allow-credentials'), 'true');
+  assert.deepEqual(await res.json(), {
+    status: 'healthy',
+    message: 'BookNook server is running.',
+  });
+});
+
 test('GET /api/books returns book catalog with typed fields (category, image, addedBy)', async () => {
   const res = await fetch(`${baseUrl}/api/books`);
   assert.equal(res.status, 200);
@@ -88,7 +101,7 @@ test('GET /api/books returns book catalog with typed fields (category, image, ad
   assert.ok(Array.isArray(json.data));
   assert.ok(json.data.length > 0);
 
-  // Assert no lorem ipsum and required fields exist
+
   for (const book of json.data) {
     assert.doesNotMatch(book.description.toLowerCase(), /lorem\s+ipsum/);
     assert.ok(book.title, 'Book title should exist');
@@ -100,7 +113,7 @@ test('GET /api/books returns book catalog with typed fields (category, image, ad
 });
 
 test('POST /api/books validates and adds a book with typed Book schema', async () => {
-  // Test invalid payload with token
+
   const badRes = await fetch(`${baseUrl}/api/books`, {
     method: 'POST',
     headers: {
@@ -111,7 +124,7 @@ test('POST /api/books validates and adds a book with typed Book schema', async (
   });
   assert.equal(badRes.status, 400);
 
-  // Test valid payload matching Book type
+
   const validBook = {
     title: 'The Pragmatic Programmer: 20th Anniversary Edition',
     author: 'David Thomas & Andrew Hunt',
@@ -141,14 +154,28 @@ test('POST /api/books validates and adds a book with typed Book schema', async (
 });
 
 test('Workflow: Borrow and return a book with UNIQUE compound index enforcement', async () => {
-  // 1. Get an available book
+  const invalidBookId = await fetch(`${baseUrl}/api/books/not-an-objectid/borrow`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${authToken}` },
+  });
+  assert.equal(invalidBookId.status, 400);
+  assert.deepEqual(await invalidBookId.json(), { message: 'Invalid book ID.' });
+
+  const missingBook = await fetch(`${baseUrl}/api/books/6541f71a9b1c2d3e4f5a6b7c/borrow`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${authToken}` },
+  });
+  assert.equal(missingBook.status, 404);
+  assert.deepEqual(await missingBook.json(), { message: 'Book not found.' });
+
+
   const booksRes = await fetch(`${baseUrl}/api/books`);
   const booksData = await booksRes.json();
-  const targetBook = booksData.data[0];
+  const targetBook = booksData.data.find((book) => book.availableCopies > 0);
   assert.ok(targetBook, 'Should have at least one available book');
   const initialAvailable = targetBook.availableCopies;
 
-  // 2. Borrow the book with typed Borrow payload
+
   const borrowPayload = {
     userName: 'Eleanor Vance',
     userEmail: `eleanor.test.${Date.now()}@example.org`,
@@ -169,13 +196,14 @@ test('Workflow: Borrow and return a book with UNIQUE compound index enforcement'
   assert.equal(borrowJson.data.book.availableCopies, initialAvailable - 1);
   const borrowRecordId = borrowJson.data.borrow._id;
 
-  // Verify Borrow fields
-  assert.equal(borrowJson.data.borrow.userName, borrowPayload.userName);
-  assert.equal(borrowJson.data.borrow.userEmail, borrowPayload.userEmail);
-  assert.ok(borrowJson.data.borrow.bookImage);
-  assert.ok(borrowJson.data.borrow.borrowDate);
 
-  // 3. Try to borrow the same book again with the same userEmail (compound UNIQUE index prevents double borrowing)
+  assert.equal(borrowJson.data.borrow.userName, 'Test Librarian');
+  assert.equal(borrowJson.data.borrow.userEmail, 'tester@booknook.library');
+  assert.ok(borrowJson.data.borrow.bookImage);
+  assert.ok(borrowJson.data.borrow.borrowedAt);
+  assert.equal(borrowJson.data.borrow.returnedAt, null);
+
+
   const duplicateBorrowRes = await fetch(`${baseUrl}/api/books/${targetBook._id}/borrow`, {
     method: 'POST',
     headers: {
@@ -188,7 +216,7 @@ test('Workflow: Borrow and return a book with UNIQUE compound index enforcement'
   const duplicateJson = await duplicateBorrowRes.json();
   assert.match(duplicateJson.message, /already borrowed/i);
 
-  // 4. Return the book via /api/books/:id/return
+
   const returnRes = await fetch(`${baseUrl}/api/books/${targetBook._id}/return`, {
     method: 'POST',
     headers: {

@@ -1,10 +1,10 @@
 import { Book } from '../types';
 
-/**
- * Authentic, curated initial library books adhering strictly to the Book schema:
- * title, author, category (Fiction|Science|History|Kids|Others), image, description,
- * totalCopies, availableCopies, addedBy {name, email}, createdAt (Date).
- */
+
+
+
+
+
 export const initialBooks: Omit<Book, '_id'>[] = [
   {
     title: "To Kill a Mockingbird",
