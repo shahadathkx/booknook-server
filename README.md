@@ -15,12 +15,12 @@ This repository includes a [`render.yaml`](./render.yaml) file for automatic Blu
    - `MONGODB_URI`: Your MongoDB Atlas connection string.
    - `DB_NAME`: Database name (e.g., `booknook`).
    - `CLIENT_URL`: URL of your frontend (e.g., `https://booknook.vercel.app` or `http://localhost:3000`).
-   - `AUTH_JWKS_URL`: BetterAuth JWKS endpoint (e.g., `https://your-app.com/api/auth/jwks`).
+   - `AUTH_JWKS_URL`: Frontend BetterAuth JWKS endpoint (e.g., `https://your-app.com/api/auth/jwks`).
 3. **Manual Web Service Config (Alternative)**:
    - **Environment**: Node
    - **Build Command**: `npm install && npm run build`
    - **Start Command**: `npm start`
-   - **Health Check Path**: `/`
+   - **Health Check Path**: `/health`
 
 The server automatically listens on `process.env.PORT` bound to `0.0.0.0`.
 
@@ -49,7 +49,7 @@ PORT=7000
 CLIENT_URL=http://localhost:3000
 MONGODB_URI=mongodb+srv://<username>:<password>@cluster.mongodb.net/?retryWrites=true&w=majority
 DB_NAME=booknook
-AUTH_JWKS_URL=https://your-auth-domain/.well-known/jwks.json
+AUTH_JWKS_URL=http://localhost:3000/api/auth/jwks
 ```
 
 ---
@@ -61,13 +61,13 @@ All responses return structured JSON:
 - `400` for invalid parameters or business logic failures (e.g., "Not available")
 - `401` for missing or invalid Bearer tokens
 - `403` for forbidden actions (e.g., modifying another user's book)
-- `404` for missing records or invalid ObjectIds
+- `400` for invalid ObjectIds and `404` for valid IDs whose records do not exist
 - `409` for duplicate borrow attempts ("You have already borrowed this book")
 
 ---
 
 ### 1. Health Check
-- **`GET /`**
+- **`GET /health`** (the legacy `GET /` response is also available)
 - **Auth**: Public
 - **Description**: Returns server operational status and available endpoint list.
 - **Response `200`**:
@@ -84,13 +84,12 @@ All responses return structured JSON:
 
 ### 2. Get All Books
 - **`GET /books`** (also accessible at `/api/books`)
-- **Auth**: Public (Requires JWT only when `?email=` is supplied)
+- **Auth**: Public
 - **Query Parameters**:
   - `?limit=6`: Limits the number of books returned.
   - `?sort=newest`: Sorts books by creation date descending (`createdAt: -1`).
   - `?category=Fiction`: Filters by category (`Fiction`, `Science`, `History`, `Kids`, `Others`).
   - `?search=tolkien`: Case-insensitive search matching `title` or `author`.
-  - `?email=user@example.com`: Returns only books added by this user. **Requires Bearer JWT** and verifies `req.user.email === email` (returns `403` if mismatched).
 - **Response `200`**:
   ```json
   {
@@ -119,10 +118,16 @@ All responses return structured JSON:
 
 ---
 
-### 3. Get Book Details
+### 3. Get My Books
+- **`GET /books/my`** (also accessible at `/api/books/my`)
+- **Auth**: Protected; returns books added by the authenticated user.
+
+---
+
+### 4. Get Book Details
 - **`GET /books/:id`** (also accessible at `/api/books/:id`)
-- **Auth**: Protected (Requires `Authorization: Bearer <token>`)
-- **Description**: Fetches individual book details by MongoDB ObjectId. Validates ID format and returns `404` if invalid or not found.
+- **Auth**: Public
+- **Description**: Fetches individual book details by MongoDB ObjectId. Invalid IDs return `400`; missing books return `404`.
 - **Response `200`**:
   ```json
   {
@@ -134,7 +139,7 @@ All responses return structured JSON:
 
 ---
 
-### 4. Add a Book
+### 5. Add a Book
 - **`POST /books`** (also accessible at `/api/books`)
 - **Auth**: Protected (Requires `Authorization: Bearer <token>`)
 - **Description**: Adds a new book to the library catalog. Validates fields, automatically initializes `availableCopies = totalCopies`, sets `createdAt = new Date()`, and assigns `addedBy: { name, email }` strictly from the verified JWT payload.
@@ -160,7 +165,7 @@ All responses return structured JSON:
 
 ---
 
-### 5. Update a Book
+### 6. Update a Book
 - **`PATCH /books/:id`** (also accessible at `/api/books/:id`)
 - **Auth**: Protected (Only the book owner `addedBy.email === req.user.email`)
 - **Description**: Updates book details (`title`, `author`, `category`, `image`, `description`, `totalCopies`). When `totalCopies` changes, dynamically adjusts `availableCopies` by the difference (`diff = newTotal - oldTotal`), never dropping below `0`.
@@ -182,7 +187,7 @@ All responses return structured JSON:
 
 ---
 
-### 6. Delete a Book
+### 7. Delete a Book
 - **`DELETE /books/:id`** (also accessible at `/api/books/:id`)
 - **Auth**: Protected (Only the book owner `addedBy.email === req.user.email`)
 - **Description**: Deletes the specified book from the library and cascadingly removes all related borrow records from the `borrows` collection.
@@ -196,14 +201,15 @@ All responses return structured JSON:
 
 ---
 
-### 7. Borrow a Book
+### 8. Borrow a Book
 - **`POST /borrows`** (also accessible at `/api/borrows`)
+- **`POST /api/books/:id/borrow`** is also available for borrowing by book ID.
 - **Auth**: Protected (Requires `Authorization: Bearer <token>`)
 - **Description**:
   1. Finds the book.
   2. Rejects if the user already borrowed the book (`409` "You have already borrowed this book").
-  3. Atomically decrements `availableCopies` via `updateOne({ _id, availableCopies: { $gt: 0 } }, { $inc: { availableCopies: -1 } })`. If out of stock, returns `400` "Not available".
-  4. Inserts borrow record `{ bookId, bookTitle, bookImage, userEmail, userName, borrowDate: now, returnDate: now + 7 days }`.
+  3. Atomically decrements `availableCopies` only when a copy is available. If out of stock, returns `400` "Not available".
+  4. Inserts borrow record `{ userId, bookId, borrowedAt, returnedAt: null }` (legacy display fields remain available).
   5. If insertion fails (unique compound index constraint), automatically rolls back the decrement (`$inc: +1`).
 - **Request Body**:
   ```json
@@ -215,14 +221,17 @@ All responses return structured JSON:
   ```json
   {
     "success": true,
-    "message": "\"To Kill a Mockingbird\" borrowed successfully. Due date: 11/7/2026.",
+    "message": "\"To Kill a Mockingbird\" borrowed successfully.",
     "data": {
       "_id": "67249876543210fedcba5678",
+      "userId": "user-123",
       "bookId": "67241234567890abcdef1234",
       "bookTitle": "To Kill a Mockingbird",
       "bookImage": "https://images.unsplash.com/...",
       "userEmail": "reader@example.com",
       "userName": "Jane Reader",
+      "borrowedAt": "2026-10-31T23:00:00.000Z",
+      "returnedAt": null,
       "borrowDate": "2026-10-31T23:00:00.000Z",
       "returnDate": "2026-11-07T23:00:00.000Z"
     }
@@ -234,7 +243,7 @@ All responses return structured JSON:
 ### 8. Get Logged-in User's Borrows
 - **`GET /borrows`** (also accessible at `/api/borrows`)
 - **Auth**: Protected (Requires `Authorization: Bearer <token>`)
-- **Description**: Returns all borrow records belonging exclusively to the authenticated user (`req.user.email`), sorted newest first (`borrowDate: -1`).
+- **Description**: Returns the authenticated user's active borrow records with each book populated in `book`.
 - **Response `200`**:
   ```json
   {
@@ -248,6 +257,9 @@ All responses return structured JSON:
 ---
 
 ### 9. Return a Book
+- **`POST /api/borrows/:id/return`**
+- **Auth**: Protected (only the borrower can return a record)
+- **Description**: Sets `returnedAt` and increments the associated book's `availableCopies`. Invalid borrow IDs return `400`; missing records return `404`.
 - **`DELETE /borrows/:id`** (also accessible at `/api/borrows/:id`)
 - **Auth**: Protected (Only the borrower `borrow.userEmail === req.user.email`)
 - **Description**: Deletes the borrow record and restores the book's stock by incrementing `availableCopies` by `+1` (`$inc: { availableCopies: 1 }`).
@@ -271,7 +283,7 @@ npm test
 
 ### Test Coverage
 - **`test/books.test.js`**: Public queries, limits, sort, category filtering, search, token-scoped email access, protected routes, ownership checks, dynamic stock updates, and cascading borrow deletion.
-- **`test/borrows.test.js`**: Atomic decrement, rollback on failure, 7-day loan window, double-borrow prevention (`409`), user-scoped borrow listings, and return deletion with stock increment.
+- **`test/borrows.test.js`**: Atomic decrement, rollback on failure, 7-day display due date, double-borrow prevention (`409`), populated user-scoped active borrows, and return stock increments.
 - **`test/verifyJWT.test.js`**: BetterAuth JWKS token verification with ephemeral RSA key-pairs, header extraction, and rejection of malformed/untrusted tokens.
 - **`test/api.test.js`**: End-to-end operational health check and catalog integration.
 
